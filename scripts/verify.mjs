@@ -217,6 +217,32 @@ const dropped = await cdp.eval(`(() => {
 })()`);
 check('palette drag-drop adds LED (+resistor)', dropped === 2, `added=${dropped}`);
 
+// ---- test 6: switching the board rebuilds machine + board footprint ----
+const switched = await cdp.eval(`(() => {
+  const sel = document.querySelector('.toolbar select');
+  const opt = [...sel.options].find((o) => o.value.includes('nodemcu'));
+  sel.value = opt.value;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  return opt.value;
+})()`);
+await sleep(600);
+const switchedState = await cdp.eval(`(() => {
+  const s = window.__emu.schematic;
+  const b = s.boardComponent();
+  return JSON.stringify({
+    param: b.params.board,
+    pins: s.allPinWorlds().filter((p) => p.comp === 'board').length,
+    gpio: window.__emu.machine.gpio !== undefined,
+    ledBuiltin: window.__emu.machine.phase() !== undefined,
+  });
+})()`);
+const a = JSON.parse(switchedState);
+check(
+  'board switch to NodeMCU keeps document consistent',
+  a.param.includes('nodemcu') && a.pins > 0 && a.gpio,
+  switchedState,
+);
+
 // ---- screenshot of the finished scene ----
 const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
 writeFileSync('/home/donpedro/shot-gui-e2e.png', Buffer.from(shot.data, 'base64'));
