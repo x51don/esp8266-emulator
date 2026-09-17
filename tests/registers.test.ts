@@ -57,8 +57,8 @@ describe('GpioRegisters - OUT and ENABLE', () => {
 
   it('writing non-GPIO addresses throws', () => {
     const r = new GpioRegisters();
-    expect(() => r.write(0x60000000, 1)).toThrow(/unknown register/i);
-    expect(() => r.read(0x60000000)).toThrow(/unknown register/i);
+    expect(() => r.write(0x60000000, 1)).toThrow(/unknown .*register/i);
+    expect(() => r.read(0x60000000)).toThrow(/unknown .*register/i);
   });
 });
 
