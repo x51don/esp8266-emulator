@@ -1,6 +1,7 @@
 # Architecture (living document)
 
-Updated: 2026-09-17 (Phase 1). This file is the entry point after a session restart.
+Updated: 2026-02-19 (Phase 3 done: core + peripherals + machine facade; 158 tests green).
+This file is the entry point after a session restart.
 Milestone-by-milestone progress: see `docs/context/milestone_*.md` (highest number = latest state).
 
 ## What we build
@@ -35,11 +36,13 @@ core/            simulation engine (pure logic, no DOM)
   boards.ts      board & pinout definitions (chip GPIO <-> silk labels) for
                  Wemos D1 mini and NodeMCU v3
 peripherals/     circuit components (pure logic)
-  component.ts   component base: pins, params, update(ctx)
-  gpio view -> core (drive/pull state lives in machine gpio)
-  netlist.ts     wires/nets, connectivity, signal propagation
-  led.ts resistor.ts button.ts pushbutton, dht-ish sensor stubs, servo, oled later
-gui/             React app + custom canvas engine (DOM allowed only here)
+  gpio.ts        GpioBus: electrical pin state (modes, pull-ups, open-drain D0,
+                 PWM duty, external drivers, conflicts, onPinChange)
+  netlist.ts     the drawn circuit: components/wires, Dijkstra source reach,
+                 LED current/burnout, short/contention faults, resolve() ->
+                 { leds, pinLevels, externals, faults, netOf, netVoltage }
+  (more component kinds extend netlist params: buzzer, servo, OLED later)
+gui/             React app + custom canvas engine (DOM allowed only here)  [Phase 4+]
   App.tsx        layout: palette | canvas | editor+serial panels, toolbar (run/stop/reset)
   canvas/        viewport (pan/zoom/grid), renderer, hit-testing, interaction tools
   CodeEditor.tsx CodeMirror wrapper
