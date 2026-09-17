@@ -489,7 +489,18 @@ class Parser {
   private parsePostfix(): Expr {
     let e = this.parsePrimary();
     for (;;) {
-      if (this.isPunct('(')) {
+      if (this.isPunct('.')) {
+        // only object.method() is supported (Serial.println(...)) - merge the
+        // dotted name into the Ident; bare member access stays a syntax error
+        this.next();
+        const prop = this.next();
+        if (e.kind !== 'Ident' || prop.type !== 'ident') {
+          throw new SyntaxError(
+            `only 'object.method()' access is supported (line ${prop.line})`,
+          );
+        }
+        e = { kind: 'Ident', name: `${(e as Ident).name}.${prop.value}`, line: e.line };
+      } else if (this.isPunct('(')) {
         if (e.kind !== 'Ident') {
           throw new SyntaxError(`only plain function calls are supported (line ${e.line})`);
         }

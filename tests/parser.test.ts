@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parse } from '../core/sketch/parser';
+import { parse, type Call, type ExprStmt, type FuncDef, type Ident, type NumLit, type VarDecl } from '../core/sketch/parser';
 
 // Recursive-descent parser producing a plain-object AST for the Arduino-C++ subset.
 
@@ -176,5 +176,28 @@ describe('parse - diagnostics', () => {
 
   it('reports unbalanced braces', () => {
     expect(() => parse('void f() {')).toThrow(/unexpected end of input|expected/);
+  });
+});
+
+describe('dotted method calls (Serial.println etc.)', () => {
+  it('parses Serial.println("x") as a Call with a dotted callee', () => {
+    const p = parse('void setup() { Serial.println("hi"); }');
+    const body = (p.globals[0] as FuncDef).body.body[0] as ExprStmt;
+    expect(body.expr.kind).toBe('Call');
+    expect((body.expr as Call).callee).toBe('Serial.println');
+  });
+
+  it('parses Serial.begin(115200) with args', () => {
+    const p = parse('void setup() { Serial.begin(115200); }');
+    const body = (p.globals[0] as FuncDef).body.body[0] as ExprStmt;
+    const call = body.expr as Call;
+    expect(call.callee).toBe('Serial.begin');
+    expect((call.args[0] as NumLit).v).toBe(115200);
+  });
+
+  it('accepts bare member access as a dotted name (runtime resolves it)', () => {
+    const p = parse('void setup() { int x = Serial.rts; }');
+    const body = (p.globals[0] as FuncDef).body.body[0] as VarDecl;
+    expect((body.decls[0].init as Ident).name).toBe('Serial.rts');
   });
 });
