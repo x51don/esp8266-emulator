@@ -188,7 +188,16 @@ class Parser {
         if (pname.type !== 'ident') {
           throw new SyntaxError(`expected parameter name (line ${pname.line})`);
         }
-        params.push({ name: pname.value, type: ptypeWords.join(' ') || 'int' });
+        const ptype = ptypeWords.join(' ') || 'int';
+        if (this.isPunct('[')) {
+          // array parameter: `int arr[]` / `int pins[4]` - decays to a pointer
+          this.next();
+          if (this.peek().type === 'num') this.next();
+          this.eatPunct(']');
+          params.push({ name: pname.value, type: `${ptype}[]` });
+        } else {
+          params.push({ name: pname.value, type: ptype });
+        }
       } while (this.isPunct(',') && this.next() !== undefined);
     }
     this.eatPunct(')');
