@@ -240,6 +240,17 @@ export class Interpreter {
     return this.callUser(fn, [], fn.def.line);
   }
 
+  /** Call a user function by name (timer ISRs). */
+  callFn(name: string, args: number[] = []): SketchGen {
+    this.initGlobals();
+    const fn = this.requireFunc(name);
+    return this.callUser(fn, args.map((a) => numVal(a, true)), fn.def.line);
+  }
+
+  hasFunction(name: string): boolean {
+    return this.funcs.has(name);
+  }
+
   private requireFunc(name: string): FuncInstance {
     const fn = this.funcs.get(name);
     if (!fn) throw new SketchRuntimeError(`sketch must define void ${name}()`, 0);

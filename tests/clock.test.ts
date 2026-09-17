@@ -155,3 +155,29 @@ describe('Clock - scheduling and firing', () => {
     expect(c.nextEventTime()).toBe(Infinity);
   });
 });
+
+describe('restart', () => {
+  it('rewinds to zero and drops pending tasks', () => {
+    const c = new Clock();
+    let fired = false;
+    c.advance(50);
+    c.setTimeout(10, () => { fired = true; });
+    c.restart();
+    c.advance(1000);
+    expect(fired).toBe(false);
+    expect(c.now()).toBe(1000);
+  });
+});
+
+describe('drain', () => {
+  it('fires tasks due at the current instant without moving time', () => {
+    const c = new Clock();
+    const seen: number[] = [];
+    c.setTimeout(0, () => seen.push(1));
+    c.advance(0); // passive: advance(0) does nothing
+    expect(seen).toEqual([]);
+    c.drain();
+    expect(seen).toEqual([1]);
+    expect(c.now()).toBe(0);
+  });
+});

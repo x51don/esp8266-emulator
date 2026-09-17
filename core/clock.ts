@@ -42,6 +42,30 @@ export class Clock {
     if (deltaUs > 0) this.advanceTo(this.time + deltaUs);
   }
 
+  /**
+   * Fire every task that is due at the CURRENT instant (time does not move).
+   * Lets owners drain zero-delay work scheduled "right now" while remaining
+   * passive: nothing runs unless somebody pumps the clock.
+   */
+  drain(): void {
+    let firings = 0;
+    while (this.heap.length > 0 && this.heap[0].due <= this.time) {
+      const entry = this.pop();
+      if (entry.canceled) continue;
+      if (++firings > MAX_FIRINGS_PER_ADVANCE) {
+        throw new Error(
+          `Clock runaway: >${MAX_FIRINGS_PER_ADVANCE} timer firings in one drain`,
+        );
+      }
+      entry.action();
+      if (entry.period !== null) {
+        entry.due += entry.period;
+        entry.seq = ++this.seq;
+        this.push(entry);
+      }
+    }
+  }
+
   /** Move virtual time to an absolute target (never backwards). Fires due timers. */
   advanceTo(targetUs: number): void {
     if (!Number.isFinite(targetUs) || targetUs <= this.time) return;
@@ -105,6 +129,12 @@ export class Clock {
   }
 
   /** Drop all pending timers; time is kept. */
+  /** Rewind the virtual clock to zero and drop every pending task. */
+  restart(): void {
+    this.clearAll();
+    this.time = 0;
+  }
+
   clearAll(): void {
     for (const e of this.heap) e.canceled = true;
     this.heap.length = 0;

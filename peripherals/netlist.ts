@@ -53,6 +53,8 @@ export interface ResolveResult {
   leds: Map<string, LedState>;
   /** logic level every MCU signal pin sees (what digitalRead() will return) */
   pinLevels: Map<string, 0 | 1>;
+  /** levels imposed on MCU pins by OTHER drivers only (for the GPIO bus) */
+  externals: Map<string, 0 | 1>;
   faults: Fault[];
   netOf: Map<string, string>;
   netVoltage: Map<string, number>;
@@ -211,6 +213,7 @@ export class Netlist {
   resolve(): ResolveResult {
     const leds = new Map<string, LedState>();
     const pinLevels = new Map<string, 0 | 1>();
+    const externals = new Map<string, 0 | 1>();
     const faults: Fault[] = [];
     const netOf = new Map<string, string>();
     const netVoltage = new Map<string, number>();
@@ -280,16 +283,17 @@ export class Netlist {
         if (p in RAIL_V) continue;
         const t = term(c.id, p);
         const list = netSources.get(netOf.get(t)!) ?? [];
-        // The pin's own pull-up counts (that is exactly what it reads back);
-        // a strong driver anywhere on the net always wins over it.
-        const strong = list.find((s) => s.strong);
-        const weak = list.find((s) => !s.strong);
-        const pick = strong ?? weak;
+        // Full view: a strong driver anywhere wins, else the pin's own
+        // pull-up decides (that is exactly what digitalRead() sees).
+        const pick = list.find((s) => s.strong) ?? list.find((s) => !s.strong);
         pinLevels.set(t, pick ? (pick.v > 1.65 ? 1 : 0) : 0);
+        // External view: only OTHER strong drivers act on this pin.
+        const other = list.find((s) => s.strong && s.at !== t);
+        if (other) externals.set(t, other.v > 1.65 ? 1 : 0);
       }
     }
 
-    return { leds, pinLevels, faults, netOf, netVoltage };
+    return { leds, pinLevels, externals, faults, netOf, netVoltage };
   }
 
   private pinsOf(c: ComponentDef): string[] {
