@@ -56,13 +56,13 @@ export class Viewport {
   }
 
   /** Center `rect` inside a viewW x viewH viewport, respecting `padding` px. */
-  fit(rect: Rect, viewW: number, viewH: number, padding = 20): void {
+  fit(rect: Rect, viewW: number, viewH: number, padding = 20, maxZoom = MAX_ZOOM): void {
     const availW = Math.max(1, viewW - 2 * padding);
     const availH = Math.max(1, viewH - 2 * padding);
     this.zoom = clamp(
       Math.min(availW / Math.max(rect.w, 1e-6), availH / Math.max(rect.h, 1e-6)),
       MIN_ZOOM,
-      MAX_ZOOM,
+      Math.min(maxZoom, MAX_ZOOM),
     );
     this.camX = rect.x + rect.w / 2 - viewW / 2 / this.zoom;
     this.camY = rect.y + rect.h / 2 - viewH / 2 / this.zoom;

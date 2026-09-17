@@ -123,6 +123,22 @@ export function App() {
     return () => window.clearInterval(id);
   }, [running, machine]);
 
+  // Debug/automation hook: the whole model is reachable from the console.
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).__emu = {
+      schematic,
+      get machine() {
+        return machineRef.current;
+      },
+      get viewport() {
+        return canvasApi.current?.viewport;
+      },
+      setSketch,
+    };
+  }, [schematic]);
+  const machineRef = useRef(machine);
+  machineRef.current = machine;
+
   // fit once the canvas exists
   useEffect(() => {
     const t = window.setTimeout(() => canvasApi.current?.fitTo(), 50);

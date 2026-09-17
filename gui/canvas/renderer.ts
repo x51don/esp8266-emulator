@@ -206,13 +206,14 @@ function drawBoard(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedCompo
   ctx.stroke();
 
   ctx.fillStyle = C.silk;
-  ctx.font = `${Math.max(11, 12 * s.viewport.zoom)}px ui-monospace, monospace`;
-  ctx.textBaseline = 'middle';
+  ctx.font = `${Math.min(14, Math.max(11, 12 * s.viewport.zoom))}px ui-monospace, monospace`;
+  ctx.textBaseline = 'alphabetic';
   const boardName = String(c.params.board ?? '').includes('nodemcu') ? 'NodeMCU v3' : 'Wemos D1 mini';
-  ctx.fillText(boardName, p0.x + 12, p0.y + 14);
+  ctx.fillText(boardName, p0.x + 2, p0.y - 6);
 
   // silk labels beside every pin
   const fp = footprintFor('board', c.params);
+  ctx.font = `${Math.max(9, Math.min(12, 11 * s.viewport.zoom))}px ui-monospace, monospace`;
   for (const p of fp.pins) {
     const w = s.schematic.pinWorld({ comp: c.id, pin: p.name });
     const q = s.viewport.worldToScreen(w.x, w.y);
@@ -407,7 +408,7 @@ function roundRect(
 
 function labelAt(ctx: CanvasRenderingContext2D, s: RenderScene, text: string, at: Pt): void {
   ctx.fillStyle = C.text;
-  ctx.font = `${Math.max(9, 10 * Math.min(1.4, s.viewport.zoom))}px ui-monospace, monospace`;
+  ctx.font = `${Math.max(9, Math.min(13, 10 * s.viewport.zoom))}px ui-monospace, monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'bottom';
   ctx.fillText(text, at.x, at.y);

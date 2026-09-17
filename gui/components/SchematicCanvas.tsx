@@ -4,7 +4,7 @@
  * (selection count, faults); the 60 fps path is imperative.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Esp8266Machine } from '../../core/machine';
 import { nearestPin } from '../canvas/hit';
 import { renderScene } from '../canvas/renderer';
@@ -37,7 +37,11 @@ export function SchematicCanvas({ schematic, machine, running, speed, onEdit, ap
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const vpRef = useRef(new Viewport());
-  const driverRef = useRef(new SimDriver(machine, { speed }));
+  // one driver per machine instance: the App recreates the machine on board
+  // switch, and a stale driver would pump a dead simulation.
+  const driver = useMemo(() => new SimDriver(machine, { speed }), [machine]); // eslint-disable-line react-hooks/exhaustive-deps
+  const driverRef = useRef<SimDriver>(driver);
+  driverRef.current = driver;
   const toolRef = useRef<Tool>({ kind: 'idle' });
   const hoverPinRef = useRef<TerminalRef | null>(null);
   const selectionRef = useRef<Set<string>>(new Set());
@@ -51,7 +55,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, onEdit, ap
       fitTo: () => {
         const el = canvasRef.current;
         if (!el) return;
-        vpRef.current.fit(schematic.bounds(), el.clientWidth, el.clientHeight, 60);
+        vpRef.current.fit(schematic.bounds(), el.clientWidth, el.clientHeight, 60, 1.15);
       },
     };
     return () => {
@@ -142,7 +146,11 @@ export function SchematicCanvas({ schematic, machine, running, speed, onEdit, ap
 
   // ---- events ----
   const onPointerDown = (e: React.PointerEvent): void => {
-    (e.target as Element).setPointerCapture(e.pointerId);
+    try {
+      (e.target as Element).setPointerCapture(e.pointerId);
+    } catch {
+      /* synthetic pointers (automation) have no capture handle */
+    }
     const w = toWorld(e);
 
     // running buttons: momentary press

@@ -55,4 +55,9 @@ describe('Viewport transforms', () => {
     const tl = v.worldToScreen(0, 0);
     expect(tl.x).toBeGreaterThanOrEqual(40 - 0.001); // respects padding
   });
+  it('fit respects the maxZoom cap', () => {
+    const vp = new Viewport(); vp.setZoom(3);
+    vp.fit({ x: 0, y: 0, w: 100, h: 100 }, 1000, 1000, 10, 1.25);
+    expect(vp.zoom).toBe(1.25);
+  });
 });
