@@ -55,8 +55,12 @@ export function renderScene(ctx: CanvasRenderingContext2D, s: RenderScene): void
   drawGrid(ctx, s);
 
   const pins = pinMap(s.schematic);
+  // layer order: board bodies, wires (over the board, under small parts),
+  // parts, then the in-progress wire
+  for (const c of s.schematic.components.values()) if (c.type === 'board') drawComponent(ctx, s, c);
   drawWires(ctx, s, pins);
-  for (const c of s.schematic.components.values()) drawComponent(ctx, s, c);
+  for (const c of s.schematic.components.values()) if (c.type !== 'board') drawComponent(ctx, s, c);
+  for (const c of s.schematic.components.values()) if (c.type === 'board') drawBoardPins(ctx, s, c);
   drawDragWire(ctx, s, pins);
 
   ctx.restore();
@@ -180,7 +184,9 @@ function drawComponent(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedC
     ctx.setLineDash([]);
   }
 
-  // pins (on top, always grabbable)
+  // pins (on top, always grabbable); board pins draw in a later pass so
+  // wires never hide them
+  if (c.type === 'board') return;
   for (const p of fp.pins) {
     const w = s.schematic.pinWorld({ comp: c.id, pin: p.name });
     const q = s.viewport.worldToScreen(w.x, w.y);
@@ -224,19 +230,19 @@ function drawBoard(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedCompo
   }
   ctx.textAlign = 'left';
 
-  // live pin level dots for signal pins
-  if (s.circuit) {
-    for (const p of fp.pins) {
-      const t = `${c.id}.${p.name}`;
-      const level = s.circuit.pinLevels.get(netTerminal(s, t));
-      if (level === undefined) continue;
-      const w = s.schematic.pinWorld({ comp: c.id, pin: p.name });
-      const q = s.viewport.worldToScreen(w.x, w.y);
-      ctx.fillStyle = level ? C.wireHot : '#2c3a4d';
-      ctx.beginPath();
-      ctx.arc(q.x, q.y, 2, 0, Math.PI * 2);
-      ctx.fill();
-    }
+}
+
+function drawBoardPins(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent): void {
+  const fp = footprintFor('board', c.params);
+  for (const p of fp.pins) {
+    const w = s.schematic.pinWorld({ comp: c.id, pin: p.name });
+    const q = s.viewport.worldToScreen(w.x, w.y);
+    const t = `${c.id}.${p.name}`;
+    const level = s.circuit?.pinLevels.get(netTerminal(s, t));
+    ctx.fillStyle = level === undefined ? C.pin : level ? C.wireHot : '#2c3a4d';
+    ctx.beginPath();
+    ctx.arc(q.x, q.y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
   }
 }
 
