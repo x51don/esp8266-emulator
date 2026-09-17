@@ -398,14 +398,14 @@ export class Esp8266Machine {
           case 'Serial.available': return { value: 0 };
           case 'Serial.read': return { value: -1 };
           case 'Serial.print':
-            this.printBuf += args.map(printValue).join('');
+            this.appendText(args.map(printValue).join(''));
             return { value: 0 };
           case 'Serial.println':
-            if (args.length) this.printBuf += args.map(printValue).join('');
-            this.flushLine();
+            if (args.length) this.appendText(args.map(printValue).join(''));
+            this.appendText('\n');
             return { value: 0 };
           case 'Serial.write':
-            this.printBuf += args.map((a) => (typeof a === 'number' ? String.fromCharCode(a) : str(a))).join('');
+            this.appendText(args.map((a) => (typeof a === 'number' ? String.fromCharCode(a) : str(a))).join(''));
             return { value: 0 };
           case 'Serial.printf': {
             const [fmt, ...rest] = args;
@@ -422,7 +422,7 @@ export class Esp8266Machine {
               else s = str(v);
               return w ? s.padStart(Number(w), ' ') : s;
             });
-            this.printBuf += text;
+            this.appendText(text);
             return { value: text.length };
           }
 
@@ -431,6 +431,21 @@ export class Esp8266Machine {
         }
       },
     };
+  }
+
+  /** Append to the pending line; embedded newlines flush whole lines. */
+  private appendText(s: string): void {
+    let rest = s;
+    for (;;) {
+      const nl = rest.indexOf('\n');
+      if (nl < 0) {
+        this.printBuf += rest;
+        return;
+      }
+      this.printBuf += rest.slice(0, nl);
+      this.flushLine();
+      rest = rest.slice(nl + 1);
+    }
   }
 
   private flushLine(): void {

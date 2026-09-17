@@ -199,4 +199,11 @@ describe('Arduino API helpers', () => {
     m.advance(25); // alarms at 10 and 20 ms (ISR runs cooperatively, <=1 loop slice late)
     expect(toggles).toBe(2);
   });
+
+  it('printf with embedded newlines flushes each line separately', () => {
+    const m = new Esp8266Machine({ board: 'wemos-d1-mini' });
+    m.load('void setup(){ Serial.printf("a\\nb\\n"); } void loop(){}');
+    m.run();
+    expect(m.serial.map((l) => l.text)).toEqual(['a', 'b']);
+  });
 });
