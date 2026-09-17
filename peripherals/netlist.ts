@@ -81,6 +81,13 @@ export class Netlist {
     if (type === 'button') this.switches.set(id, false);
   }
 
+  /** Drop every component, wire and switch (used on document re-sync). */
+  clear(): void {
+    this.comps.clear();
+    this.wires.clear();
+    this.switches.clear();
+  }
+
   removeComponent(id: string): void {
     this.comps.delete(id);
     this.switches.delete(id);

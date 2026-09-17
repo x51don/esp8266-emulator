@@ -184,3 +184,17 @@ describe('stability', () => {
     expect(r.faults).toEqual([]);
   });
 });
+
+describe('clear', () => {
+  it('drops components, wires and switch states', () => {
+    const nl = new Netlist(new GpioBus());
+    nl.addComponent('mcu', 'mcu', { board: 'wemos-d1-mini', pins: ['D2', 'GND'] });
+    nl.addComponent('b1', 'button');
+    nl.addWire('mcu.D2', 'b1.p1');
+    nl.clear();
+    const res = nl.resolve();
+    expect(res.faults).toEqual([]);
+    expect(res.leds.size).toBe(0);
+    expect(res.netOf.get('mcu.D2')).toBeUndefined();
+  });
+});
