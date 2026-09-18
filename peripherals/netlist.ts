@@ -381,6 +381,7 @@ export class Netlist {
       case 'buzzer': return ['+', '-'];
       case 'pot': return ['p1', 'w', 'p2'];
       case 'ldr': return ['p1', 'p2'];
+      case 'cap': return ['p1', 'p2']; // open at logic level (documented)
       case 'dht': return ['vcc', 'data', 'gnd'];
       case 'hcsr': return ['vcc', 'trig', 'echo', 'gnd'];
       case 'servo': return ['sig', 'vcc', 'gnd'];

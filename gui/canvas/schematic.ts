@@ -37,6 +37,18 @@ export interface WireSeg {
   id: string;
   a: TerminalRef;
   b: TerminalRef;
+  /** manual waypoints (world) set by dragging a segment; auto-route off */
+  custom?: Pt[];
+}
+
+/** Where two wire paths cross; `w2` is drawn on top (gets the hop glyph). */
+export interface Crossing {
+  x: number;
+  y: number;
+  w1: string;
+  w2: string;
+  /** true when one path's endpoint touches the other's interior (T-junction) */
+  endpoint: boolean;
 }
 
 export interface Footprint {
@@ -93,6 +105,11 @@ export function footprintFor(type: string, params: Record<string, unknown>): Foo
       return {
         pins: [{ name: 'p1', x: 0, y: 0 }, { name: 'p2', x: PIN_GAP, y: 0 }],
         body: { x: -4, y: -12, w: PIN_GAP + 8, h: 24 },
+      };
+    case 'cap':
+      return {
+        pins: [{ name: 'p1', x: 0, y: 0 }, { name: 'p2', x: PIN_GAP, y: 0 }],
+        body: { x: -8, y: -12, w: PIN_GAP + 16, h: 24 },
       };
     case 'dht':
       return {
@@ -166,10 +183,12 @@ export class Schematic {
   private seq: Record<string, number> = {};
   private wireSeq = 0;
   private routesCache: Map<string, Pt[]> | null = null;
+  private crossingsCache: Crossing[] | null = null;
 
   /** Invalidate the derived wire-route cache; every mutator calls this. */
   private touch(): void {
     this.routesCache = null;
+    this.crossingsCache = null;
   }
 
   add(type: string, x: number, y: number, params: Record<string, unknown> = {}, id?: string): PlacedComponent {
@@ -334,6 +353,7 @@ export class Schematic {
     if (this.routesCache) return this.routesCache;
     const ids: string[] = [];
     const inputs: WireRouteInput[] = [];
+    const map0 = new Map<string, Pt[]>();
     for (const w of this.wires.values()) {
       let a: Pt;
       let b: Pt;
@@ -343,18 +363,46 @@ export class Schematic {
       } catch {
         continue; // dangling reference mid-edit: skip until fixed
       }
+      if (w.custom && w.custom.length) map0.set(w.id, manualPath(a, w.custom, b));
       ids.push(w.id);
+      if (w.custom && w.custom.length) continue;
+      const bodies = this.wireObstacles(w.a, w.b);
       inputs.push({
         a, b,
         da: pinExitDir(this, w.a, a),
         db: pinExitDir(this, w.b, b),
-        obstacles: this.wireObstacles(w.a, w.b),
+        obstacles: bodies,
+        bodies,
       });
     }
+    // single Map in document order (crossing glyphs rely on the draw order)
     const map = new Map<string, Pt[]>();
+    for (const id of ids) map.set(id, map0.get(id) ?? []);
     routeWiresSequential(inputs).forEach((path, i) => map.set(ids[i], path));
     this.routesCache = map;
+    this.crossingsCache = findCrossings(map);
     return map;
+  }
+
+  /** Crossings between every pair of routed wires (valid after wireRoutes). */
+  wireCrossings(): Crossing[] {
+    this.wireRoutes();
+    return this.crossingsCache ?? [];
+  }
+
+  /** Pin a manual route on a wire (interior waypoints, world coords). */
+  setWirePath(id: string, pts: Pt[]): void {
+    const w = this.wires.get(id);
+    if (!w) return;
+    w.custom = pts.map((p) => ({ x: p.x, y: p.y }));
+    this.touch();
+  }
+
+  clearWirePath(id: string): void {
+    const w = this.wires.get(id);
+    if (!w || w.custom === undefined) return;
+    delete w.custom;
+    this.touch();
   }
 
   bounds(): Rect {
@@ -446,4 +494,74 @@ function t(r: TerminalRef): string {
 function numericSuffix(id: string, type: string): number {
   const m = id.match(new RegExp(`^${type}-(\\d+)$`));
   return m ? Number(m[1]) : 0;
+}
+
+/** Chain a -> waypoints -> b with orthogonal elbow joins. */
+export function manualPath(a: Pt, pts: Pt[], b: Pt): Pt[] {
+  const chain = [a, ...pts, b];
+  const out: Pt[] = [chain[0]];
+  for (let i = 1; i < chain.length; i++) {
+    const p = out[out.length - 1];
+    const q = chain[i];
+    if (p.x !== q.x && p.y !== q.y) out.push({ x: q.x, y: p.y });
+    if (q.x !== out[out.length - 1].x || q.y !== out[out.length - 1].y) out.push(q);
+  }
+  return out;
+}
+
+function segCross(p: Pt, q: Pt, r: Pt, t: Pt): Pt | null {
+  const pqV = p.x === q.x;
+  const rsV = r.x === t.x;
+  if (pqV === rsV) return null; // parallel or diagonal
+  if (pqV) [p, q, r, t] = [r, t, p, q]; // keep p..q horizontal
+  // now p..q horizontal, r..t vertical
+  const x = r.x;
+  const y = p.y;
+  const M = 0.5;
+  if (Math.min(p.x, q.x) + M < x && x < Math.max(p.x, q.x) - M &&
+      Math.min(r.y, t.y) + M < y && y < Math.max(r.y, t.y) - M)
+    return { x, y };
+  return null;
+}
+
+function nearVertex(path: Pt[], p: Pt): boolean {
+  return path.some((v) => Math.abs(v.x - p.x) < 2 && Math.abs(v.y - p.y) < 2);
+}
+
+/** Perpendicular crossings of wire paths; endpoints touching count too. */
+export function findCrossings(routes: Map<string, Pt[]>): Crossing[] {
+  const ids = [...routes.keys()];
+  const out: Crossing[] = [];
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      const pa = routes.get(ids[i])!;
+      const pb = routes.get(ids[j])!;
+      for (let ai = 0; ai + 1 < pa.length; ai++) {
+        for (let bi = 0; bi + 1 < pb.length; bi++) {
+          const p = segCross(pa[ai], pa[ai + 1], pb[bi], pb[bi + 1]);
+          if (!p) continue;
+          if (nearVertex(pa, p) || nearVertex(pb, p)) continue;
+          out.push({ x: p.x, y: p.y, w1: ids[i], w2: ids[j], endpoint: false });
+        }
+      }
+      // T-junctions: endpoint of one lying strictly inside the other
+      const tTouch = (path: Pt[], other: Pt[], pathId: string, otherId: string): void => {
+        for (let k = 0; k < path.length; k++) {
+          const e = path[k];
+          if (nearVertex(other, e)) continue;
+          for (let m = 0; m + 1 < other.length; m++) {
+            const r = other[m];
+            const t = other[m + 1];
+            if (r.x === t.x && e.x === r.x && Math.min(r.y, t.y) < e.y && e.y < Math.max(r.y, t.y))
+              out.push({ x: e.x, y: e.y, w1: otherId, w2: pathId, endpoint: true });
+            if (r.y === t.y && e.y === r.y && Math.min(r.x, t.x) < e.x && e.x < Math.max(r.x, t.x))
+              out.push({ x: e.x, y: e.y, w1: otherId, w2: pathId, endpoint: true });
+          }
+        }
+      };
+      tTouch(pa, pb, ids[i], ids[j]);
+      tTouch(pb, pa, ids[j], ids[i]);
+    }
+  }
+  return out;
 }

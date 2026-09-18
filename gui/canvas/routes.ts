@@ -177,6 +177,194 @@ function candidates(a1: Pt, b1: Pt, obstacles: Rect[]): Pt[][] {
   return out.filter((pts) => pts.length > 2);
 }
 
+// ---------- A* grid router (last-resort, body-guaranteed) ----------
+//
+// The candidate router above is cheap and produces pretty paths, but in
+// dense layouts no candidate may be clean; instead of pushing a wire through
+// a component body we hand the pair to an orthogonal A* on a 10 px node
+// grid: bodies are hard cells, other wires are soft (costly) cells, so the
+// grid path may cross a wire but never cuts a body.
+
+const BEND = 8; // turning costs eight straight steps
+const CROSS = 30; // passing through a prior wire's outline
+
+function astarRoute(
+  a: Pt, b: Pt, da: Dir | undefined, db: Dir | undefined,
+  hard: Rect[], soft: Rect[],
+): Pt[] | null {
+  const M = 140;
+  let x0 = Math.min(a.x, b.x) - M;
+  let y0 = Math.min(a.y, b.y) - M;
+  let x1 = Math.max(a.x, b.x) + M;
+  let y1 = Math.max(a.y, b.y) + M;
+  for (const r of hard) {
+    x0 = Math.min(x0, r.x - M); y0 = Math.min(y0, r.y - M);
+    x1 = Math.max(x1, r.x + r.w + M); y1 = Math.max(y1, r.y + r.h + M);
+  }
+  let cell = 10;
+  while (((x1 - x0) / cell) * ((y1 - y0) / cell) > 70000) cell *= 2;
+  x0 = Math.floor(x0 / cell) * cell;
+  y0 = Math.floor(y0 / cell) * cell;
+  const W = Math.ceil((x1 - x0) / cell) + 1;
+  const H = Math.ceil((y1 - y0) / cell) + 1;
+  const N = W * H;
+  if (N > 120000) return null;
+  const blocked = new Uint8Array(N);
+  const hit = (x: number, y: number, r: Rect, pad: number): boolean =>
+    x > r.x - pad && x < r.x + r.w + pad && y > r.y - pad && y < r.y + r.h + pad;
+  const gx = (x: number): number => Math.round((x - x0) / cell);
+  const gy = (y: number): number => Math.round((y - y0) / cell);
+  const node = (i: number): Pt => ({ x: x0 + (i % W) * cell, y: y0 + Math.floor(i / W) * cell });
+  const inGrid = (nx: number, ny: number): boolean => nx >= 0 && ny >= 0 && nx < W && ny < H;
+  for (const r of hard) {
+    const nx0 = Math.max(0, gx(r.x - PAD)); const nx1 = Math.min(W - 1, gx(r.x + r.w + PAD));
+    const ny0 = Math.max(0, gy(r.y - PAD)); const ny1 = Math.min(H - 1, gy(r.y + r.h + PAD));
+    for (let ny = ny0; ny <= ny1; ny++)
+      for (let nx = nx0; nx <= nx1; nx++)
+        if (hit(x0 + nx * cell, y0 + ny * cell, r, PAD)) blocked[ny * W + nx] = 1;
+  }
+  const pen = new Float64Array(N);
+  if (soft.length) {
+    for (let i = 0; i < N; i++) {
+      const p = node(i);
+      for (const r of soft) if (hit(p.x, p.y, r, 0)) { pen[i] = CROSS; break; }
+    }
+  }
+  const DIRS: Array<[number, number]> = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const dirIdx = (d?: Dir): number =>
+    d === 'right' ? 0 : d === 'left' ? 1 : d === 'down' ? 2 : d === 'up' ? 3 : -1;
+  const start = gy(a.y) * W + gx(a.x);
+  const goal = gy(b.y) * W + gx(b.x);
+  if (!inGrid(gx(a.x), gy(a.y)) || !inGrid(gx(b.x), gy(b.y))) return null;
+  // punch the pin stubs: the wire physically leaves the pin that way, so the
+  // stub cell is always passable even when it sits on a body edge
+  const punch = (from: number, d: number): number => {
+    const p = node(from);
+    const n = DIRS[d];
+    const nx = gx(p.x + n[0] * cell); const ny = gy(p.y + n[1] * cell);
+    if (!inGrid(nx, ny)) return from;
+    blocked[ny * W + nx] = 0;
+    return ny * W + nx;
+  };
+  const punchBack = (to: number, d: number): number => {
+    // cell on the +d side of `to`; approaching it means moving in -d
+    const p = node(to);
+    const n = DIRS[d];
+    const nx = gx(p.x + n[0] * cell); const ny = gy(p.y + n[1] * cell);
+    if (!inGrid(nx, ny)) return to;
+    blocked[ny * W + nx] = 0;
+    return ny * W + nx;
+  };
+  let first = start;
+  if (da !== undefined) first = punch(start, dirIdx(da));
+  let lastBeforeGoal = goal;
+  if (db !== undefined) lastBeforeGoal = punch(goal, (dirIdx(db) + 2) % 4);
+  // (the cell the wire must come from is the one on the +db side of the pin)
+  if (db !== undefined) lastBeforeGoal = punchBack(goal, dirIdx(db));
+  blocked[start] = 0;
+  blocked[goal] = 0;
+
+  const cost = new Float64Array(N).fill(Infinity);
+  const prev = new Int32Array(N).fill(-1);
+  const dir = new Int8Array(N).fill(-1);
+  // lazy binary heap of (f, idx)
+  const heap: number[] = [];
+  const fscore = new Map<number, number>();
+  const push = (f: number, i: number): void => {
+    heap.push(f, i);
+    let c = heap.length / 2 - 1;
+    while (c > 0) {
+      const par = Math.floor((c - 1) / 2);
+      if (heap[par * 2] <= heap[c * 2]) break;
+      [heap[par * 2], heap[par * 2 + 1], heap[c * 2], heap[c * 2 + 1]] =
+        [heap[c * 2], heap[c * 2 + 1], heap[par * 2], heap[par * 2 + 1]];
+      c = par;
+    }
+  };
+  const pop = (): number => {
+    const top = heap[1];
+    const n = heap.length / 2 - 1;
+    heap[1] = heap[n * 2 + 1]; heap[0] = heap[n * 2];
+    heap.length -= 2;
+    let i = 0;
+    for (;;) {
+      const l = i * 2 + 1; const r = l + 1; let m = i;
+      if (l * 2 < heap.length && heap[l * 2] < heap[m * 2]) m = l;
+      if (r * 2 < heap.length && heap[r * 2] < heap[m * 2]) m = r;
+      if (m === i) break;
+      [heap[i * 2], heap[i * 2 + 1], heap[m * 2], heap[m * 2 + 1]] =
+        [heap[m * 2], heap[m * 2 + 1], heap[i * 2], heap[i * 2 + 1]];
+      i = m;
+    }
+    return top;
+  };
+  cost[start] = 0;
+  fscore.set(start, 0);
+  push(0, start);
+  const h = (i: number): number => {
+    const p = node(i);
+    const q = node(goal);
+    return Math.abs(p.x - q.x) + Math.abs(p.y - q.y);
+  };
+  let found = -1;
+  while (heap.length) {
+    const cur = pop();
+    const curF = fscore.get(cur);
+    if (curF === undefined) continue; // stale heap duplicate
+    fscore.delete(cur);
+    if (cur === goal) { found = cur; break; }
+    const cp = node(cur);
+    for (let d = 0; d < 4; d++) {
+      const nx = gx(cp.x + DIRS[d][0] * cell);
+      const ny = gy(cp.y + DIRS[d][1] * cell);
+      if (!inGrid(nx, ny)) continue;
+      const ni = ny * W + nx;
+      if (blocked[ni]) continue;
+      if (cur === start && first !== start && d !== dirIdx(da)) continue;
+      if (cur === lastBeforeGoal && goal !== lastBeforeGoal && d !== (dirIdx(db) + 2) % 4) continue;
+      const g =
+        cost[cur] + 1 + pen[ni] +
+        (dir[cur] !== -1 && dir[cur] !== d ? BEND : 0);
+      if (g < cost[ni]) {
+        cost[ni] = g;
+        prev[ni] = cur;
+        dir[ni] = d;
+        const f = g + h(ni);
+        fscore.set(ni, f);
+        push(f, ni);
+      }
+    }
+  }
+  if (found < 0) return null;
+  const chain: Pt[] = [];
+  for (let i = found; i !== -1; i = prev[i]) chain.push(node(i));
+  chain.reverse();
+  // drop collinear nodes, attach the exact terminals with orthogonal joins
+  const pts: Pt[] = [a];
+  const keep = chain.filter((p, i) =>
+    i === 0 || i === chain.length - 1 ||
+    !((chain[i - 1].x === p.x && p.x === chain[i + 1].x) ||
+      (chain[i - 1].y === p.y && p.y === chain[i + 1].y)));
+  const join = (from: Pt, to: Pt): Pt | null => {
+    if (from.x === to.x || from.y === to.y) return null;
+    return keep.length && keep[0].x === to.x ? { x: keep[0].x, y: from.y } : { x: from.x, y: to.y };
+  };
+  const j1 = join(a, keep[0] ?? b);
+  if (j1) pts.push(j1);
+  pts.push(...keep);
+  const tail = pts[pts.length - 1];
+  if (tail.x !== b.x && tail.y !== b.y) pts.push({ x: b.x, y: tail.y });
+  pts.push(b);
+  return dedupe(pts);
+}
+
+/** Public probe: which rects does this path cut through? */
+export function pathThroughRects(
+  path: Pt[], rects: Rect[], stubA = false, stubB = false,
+): Rect[] {
+  return pathHits(path, rects, stubA, stubB);
+}
+
 export function routeWire(a: Pt, b: Pt, da?: Dir, db?: Dir, obstacles: Rect[] = []): Pt[] {
   const base = routeSimple(a, b, da, db);
   if (obstacles.length === 0) return base;
@@ -217,6 +405,8 @@ export interface WireRouteInput {
   da?: Dir;
   db?: Dir;
   obstacles?: Rect[];
+  /** component bodies only (no prior wires): what A* must never cross */
+  bodies?: Rect[];
 }
 
 /** Thin outline rects of a polyline's segments (soft obstacles). */
@@ -249,7 +439,18 @@ export function routeWiresSequential(inputs: WireRouteInput[]): Pt[][] {
     const near = (r: Rect, p: Pt): boolean =>
       p.x >= r.x - STUB && p.x <= r.x + r.w + STUB && p.y >= r.y - STUB && p.y <= r.y + r.h + STUB;
     const obs = (w.obstacles ?? []).concat(prior.filter((r) => !near(r, w.a) && !near(r, w.b)));
-    const path = routeWire(w.a, w.b, w.da, w.db, obs);
+    let path = routeWire(w.a, w.b, w.da, w.db, obs);
+    const bodies = w.bodies ?? [];
+    const through = pathThroughRects(
+      path, bodies,
+      path.length > 2 && w.da !== undefined,
+      path.length > 2 && w.db !== undefined,
+    );
+    if (bodies.length && through.length > 0) {
+      // no clean candidate existed: guarantee body-free via the grid
+      const g = astarRoute(w.a, w.b, w.da, w.db, bodies, prior);
+      if (g) path = g;
+    }
     paths.push(path);
     prior.push(...wireRects(path));
   }

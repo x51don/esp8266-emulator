@@ -31,6 +31,7 @@ interface Props {
   speed: number;
   boardId: string;
   onEdit: () => void; // schematic changed -> App re-syncs netlist + persists
+  onConfigure: (id: string) => void; // dbl-click a component -> properties
   api: React.MutableRefObject<CanvasHandles | null>;
 }
 
@@ -39,11 +40,19 @@ type Tool =
   | { kind: 'pan'; lastX: number; lastY: number }
   | { kind: 'move'; ids: string[]; startWorld: Pt; startPos: Map<string, Pt> }
   | { kind: 'wire'; from: TerminalRef; cursor: Pt }
-  | { kind: 'tune'; id: string };
+  | { kind: 'tune'; id: string }
+  | {
+      kind: 'seg';
+      id: string;
+      path: Pt[];
+      i: number;
+      axis: 'x' | 'y';
+      start: number;
+    };
 
 const TUNABLE = new Set(['pot', 'ldr', 'dht', 'hcsr']);
 
-export function SchematicCanvas({ schematic, machine, running, speed, boardId, onEdit, api }: Props) {
+export function SchematicCanvas({ schematic, machine, running, speed, boardId, onEdit, onConfigure, api }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const vpRef = useRef(new Viewport());
@@ -166,15 +175,41 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
     return null;
   };
 
+  /** nearest wire segment under the cursor, for manual-route dragging */
+  const findWireSeg = (w: Pt): { id: string; i: number; path: Pt[] } | null => {
+    const tol = 6 / vpRef.current.zoom;
+    let best: { id: string; i: number; path: Pt[]; d: number } | null = null;
+    const dist = (p: Pt, a: Pt, b: Pt): number => {
+      const vx = b.x - a.x;
+      const vy = b.y - a.y;
+      const len2 = vx * vx + vy * vy || 1;
+      const t = Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2));
+      return Math.hypot(p.x - (a.x + t * vx), p.y - (a.y + t * vy));
+    };
+    for (const wire of schematic.wires.values()) {
+      const path = schematic.wireRoutes().get(wire.id);
+      if (!path) continue;
+      for (let i = 0; i + 1 < path.length; i++) {
+        const d = dist(w, path[i], path[i + 1]);
+        if (d <= tol && (!best || d < best.d)) best = { id: wire.id, i, path, d };
+      }
+    }
+    return best;
+  };
+
   // dbl-click a wire -> confirm -> remove just that wire
   const onDoubleClick = (e: React.MouseEvent): void => {
     const rect = canvasRef.current!.getBoundingClientRect();
     const w = vpRef.current.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
     const id = findWire(w);
-    if (!id) return;
-    if (!confirmOr('Remove this wire?')) return;
-    schematic.removeWire(id);
-    onEdit();
+    if (id) {
+      if (!confirmOr('Remove this wire?')) return;
+      schematic.removeWire(id);
+      onEdit();
+      return;
+    }
+    const comp = findComponent(w);
+    if (comp) onConfigure(comp);
   };
 
   // ---- events ----
@@ -226,6 +261,27 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
       toolRef.current = { kind: 'move', ids: [...selectionRef.current], startWorld: w, startPos };
       return;
     }
+    // alt+click a wire: drop its manual route, back to auto
+    if (e.altKey) {
+      const hit = findWireSeg(w);
+      if (hit) {
+        schematic.clearWirePath(hit.id);
+        onEdit();
+        return;
+      }
+    }
+    // drag a wire segment sideways: pin a manual route onto the wire
+    const seg = findWireSeg(w);
+    if (seg) {
+      const p = seg.path[seg.i];
+      const q = seg.path[seg.i + 1];
+      const vertical = p.x === q.x;
+      toolRef.current = {
+        kind: 'seg', id: seg.id, path: seg.path.map((pt) => ({ x: pt.x, y: pt.y })),
+        i: seg.i, axis: vertical ? 'x' : 'y', start: vertical ? w.x : w.y,
+      };
+      return;
+    }
     selectionRef.current = runningRef.current ? selectionRef.current : new Set();
     toolRef.current = { kind: 'pan', lastX: e.clientX, lastY: e.clientY };
   };
@@ -240,6 +296,29 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
     } else if (tool.kind === 'wire') {
       tool.cursor = snapToGrid(w, 10);
       hoverPinRef.current = findPin(w);
+    } else if (tool.kind === 'seg') {
+      const delta = snapToGrid({ x: w.x - tool.start, y: w.y - tool.start }, 10);
+      const d = tool.axis === 'x' ? delta.x : delta.y;
+      const pts = tool.path.map((pt) => ({ x: pt.x, y: pt.y }));
+      const a = pts[tool.i];
+      const b = pts[tool.i + 1];
+      if (tool.axis === 'x') {
+        const base = tool.path[tool.i].x;
+        a.x = base + d;
+        b.x = base + d;
+      } else {
+        const base = tool.path[tool.i].y;
+        a.y = base + d;
+        b.y = base + d;
+      }
+      // keep shifted terminal points as waypoints: the wire leaves the pin
+      // and jumps to the dragged segment instead of the pin moving
+      const same = (p1: Pt, p2: Pt): boolean => p1.x === p2.x && p1.y === p2.y;
+      const custom = pts.slice(1, pts.length - 1);
+      if (!same(pts[0], tool.path[0])) custom.unshift(pts[0]);
+      const lastP = pts[pts.length - 1];
+      if (!same(lastP, tool.path[tool.path.length - 1])) custom.push(lastP);
+      schematic.setWirePath(tool.id, custom);
     } else if (tool.kind === 'tune') {
       applyTune(tool.id, w);
     } else if (tool.kind === 'move') {
@@ -285,7 +364,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
           /* duplicate wire: ignore the second attempt */
         }
       }
-    } else if (tool.kind === 'move' || tool.kind === 'tune') {
+    } else if (tool.kind === 'move' || tool.kind === 'tune' || tool.kind === 'seg') {
       onEdit();
     }
     toolRef.current = { kind: 'idle' };
@@ -346,6 +425,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
       battery: { volts: 9 },
       pot: { ratio: 0.5 },
       ldr: { lux: 300 },
+      cap: { uf: 100 },
       dht: { model: 'DHT22', tempC: 23.5, humPct: 61 },
       servo: {},
       relay: {},

@@ -142,6 +142,91 @@ function drawWires(ctx: CanvasRenderingContext2D, s: RenderScene, pins: Map<stri
     const path = s.schematic.wireRoutes().get(w.id) ?? [a, b];
     strokeWorld(ctx, s, path);
   }
+  drawCrossingGlyphs(ctx, s);
+}
+
+/** Direction (screen space) of the path segment running through a point. */
+function dirAtPoint(path: Pt[], p: Pt, s: RenderScene): number | null {
+  for (let i = 0; i + 1 < path.length; i++) {
+    const a = s.viewport.worldToScreen(path[i].x, path[i].y);
+    const b = s.viewport.worldToScreen(path[i + 1].x, path[i + 1].y);
+    const horiz = a.y === b.y;
+    const lo = horiz ? Math.min(a.x, b.x) : Math.min(a.y, b.y);
+    const hi = horiz ? Math.max(a.x, b.x) : Math.max(a.y, b.y);
+    const along = horiz ? p.x : p.y;
+    const fixed = horiz ? a.y : a.x;
+    const fixedP = horiz ? a : b;
+    const fixedHere = horiz ? p.y : p.x;
+    if (Math.abs(fixed - fixedHere) < 1 && along > lo - 1 && along < hi + 1) {
+      void fixedP;
+      return horiz ? 0 : Math.PI / 2;
+    }
+  }
+  return null;
+}
+
+/**
+ * Crossovers of two wires that are NOT connected: a hop (semicircle) rides
+ * the later-drawn wire. Same-net crossings are real solder joints and get a
+ * dot instead.
+ */
+function drawCrossingGlyphs(ctx: CanvasRenderingContext2D, s: RenderScene): void {
+  const crossings = s.schematic.wireCrossings();
+  if (crossings.length === 0) return;
+  const routes = s.schematic.wireRoutes();
+  const term = (w: { a: { comp: string; pin: string }; b: { comp: string; pin: string } }): (string | undefined)[] => [
+    s.circuit?.netOf.get(netTerminal(s, `${w.a.comp}.${w.a.pin}`)),
+    s.circuit?.netOf.get(netTerminal(s, `${w.b.comp}.${w.b.pin}`)),
+  ];
+  for (const cx of crossings) {
+    const w1 = s.schematic.wires.get(cx.w1);
+    const w2 = s.schematic.wires.get(cx.w2);
+    const p1 = routes.get(cx.w1);
+    const p2 = routes.get(cx.w2);
+    if (!w1 || !w2 || !p1 || !p2) continue;
+    const sp = s.viewport.worldToScreen(cx.x, cx.y);
+    const n1 = term(w1);
+    const same = n1.some((n) => n !== undefined && term(w2).includes(n));
+    ctx.fillStyle = C.bg;
+    ctx.beginPath();
+    ctx.arc(sp.x, sp.y, 5.5, 0, Math.PI * 2);
+    ctx.fill();
+    const d1 = dirAtPoint(p1, sp, s);
+    const d2 = dirAtPoint(p2, sp, s);
+    if (same) {
+      ctx.strokeStyle = C.wire;
+      ctx.lineWidth = 2;
+      for (const d of [d1, d2]) {
+        if (d === null) continue;
+        ctx.beginPath();
+        ctx.moveTo(sp.x - Math.cos(d) * 6, sp.y - Math.sin(d) * 6);
+        ctx.lineTo(sp.x + Math.cos(d) * 6, sp.y + Math.sin(d) * 6);
+        ctx.stroke();
+      }
+      ctx.fillStyle = C.pin;
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+      continue;
+    }
+    if (d1 !== null) {
+      ctx.strokeStyle = C.wire;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(sp.x - Math.cos(d1) * 6, sp.y - Math.sin(d1) * 6);
+      ctx.lineTo(sp.x + Math.cos(d1) * 6, sp.y + Math.sin(d1) * 6);
+      ctx.stroke();
+    }
+    if (d2 !== null) {
+      // semicircle whose endpoints sit on w2's line, bulging across w1's line
+      const start = d2 === 0 ? 0 : -Math.PI / 2;
+      ctx.strokeStyle = C.wire;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 4, start, start + Math.PI, false);
+      ctx.stroke();
+    }
+  }
 }
 
 function drawDragWire(ctx: CanvasRenderingContext2D, s: RenderScene, pins: Map<string, Pt>): void {
@@ -169,6 +254,7 @@ function drawComponent(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedC
   else if (c.type === 'buzzer') drawBox(ctx, s, body, 'BUZZ', '#4a3a5a');
   else if (c.type === 'battery') drawBox(ctx, s, body, `${c.params.volts ?? 9}V`, '#405066');
   else if (c.type === 'pot') drawPot(ctx, s, c, body);
+  else if (c.type === 'cap') drawCap(ctx, s, c, body);
   else if (c.type === 'ldr') drawChip(ctx, s, c, body, 'LDR', `${Math.round(Number(c.params.lux ?? 300))} lx`, '#33301f');
   else if (c.type === 'dht') drawChip(ctx, s, c, body, `DHT${String(c.params.model ?? 'DHT22').replace('DHT', '')}`, `${c.params.tempC ?? 22}\u00b0C  ${c.params.humPct ?? 50}%`, '#1c2836');
   else if (c.type === 'hcsr') drawHcsr(ctx, s, c, body);
@@ -250,6 +336,26 @@ function chipText(
   ctx.fillStyle = color;
   ctx.font = `${Math.max(9, 11 * b.z)}px ui-monospace, monospace`;
   ctx.fillText(value, b.x + b.w / 2, b.y + b.h / 2 + 7 * b.z);
+  ctx.textAlign = 'left';
+}
+
+function drawCap(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent, body: { x: number; y: number; w: number; h: number }): void {
+  const b = boxScreen(s, body);
+  const mid = b.x + b.w / 2;
+  ctx.strokeStyle = C.silk;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(mid - 3 * b.z, b.y + 2 * b.z);
+  ctx.lineTo(mid - 3 * b.z, b.y + b.h - 2 * b.z);
+  ctx.moveTo(mid + 3 * b.z, b.y + 4 * b.z);
+  ctx.arcTo(mid + 9 * b.z, b.y + b.h / 2, mid + 3 * b.z, b.y + b.h - 4 * b.z, 6 * b.z);
+  ctx.stroke();
+  ctx.lineWidth = 1;
+  const uf = Number(c.params.uf ?? 100);
+  ctx.fillStyle = C.text;
+  ctx.textAlign = 'center';
+  ctx.font = `${Math.max(8, 10 * b.z)}px ui-monospace, monospace`;
+  ctx.fillText(uf >= 1000 ? `${uf / 1000}mF` : `${uf}uF`, mid, b.y - 4 * b.z);
   ctx.textAlign = 'left';
 }
 

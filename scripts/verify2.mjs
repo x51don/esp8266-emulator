@@ -286,6 +286,150 @@ check('Pot wiper moves analogRead (0.5 -> ~511, 0 -> ~0)', midAdc > 400 && lowAd
 void lastAdc;
 await cdp.eval(`window.__emu.machine.stop(); true`);
 
+// ---- 13: dragging a wire segment pins a manual route ----
+// place the parts relative to the CURRENT view so the synthetic mouse
+// events always land inside the window
+const view = await cdp.eval(`(() => {
+  window.__emu.machine.stop();
+  const rect = document.querySelector('.canvas-host canvas').getBoundingClientRect();
+  const w = window.__emu.viewport.screenToWorld(rect.width / 2 - 60, rect.height / 2 + 120);
+  return { cx: Math.round(w.x / 10) * 10, cy: Math.round(w.y / 10) * 10 };
+})()`);
+const setup13 = await cdp.eval(`(() => {
+  const s = window.__emu.schematic;
+  const r1 = s.add('resistor', ${view.cx - 90}, ${view.cy}, { resistance: 220 });
+  const r2 = s.add('resistor', ${view.cx + 90}, ${view.cy}, { resistance: 220 });
+  const w = s.wire({ comp: r1.id, pin: 'p2' }, { comp: r2.id, pin: 'p1' });
+  const p = window.__emu.wirePath(w.id);
+  return {
+    id: w.id, ids: [r1.id, r2.id],
+    straight: p.length === 2 && p[0].x === ${view.cx - 70} && p[1].x === ${view.cx + 90},
+    zoom: window.__emu.viewport.zoom,
+  };
+})()`);
+const midScreen = await cdp.eval(`(() => {
+  const rect = document.querySelector('.canvas-host canvas').getBoundingClientRect();
+  const sc = window.__emu.viewport.worldToScreen(${view.cx + 10}, ${view.cy});
+  return { x: rect.left + sc.x, y: rect.top + sc.y };
+})()`);
+check('Straight test wire placed in view', setup13.straight === true, JSON.stringify(setup13));
+await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: midScreen.x, y: midScreen.y, button: 'left', clickCount: 1 });
+for (let step = 1; step <= 4; step++) {
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved', x: midScreen.x, y: midScreen.y + (30 * step) / 4, button: 'left',
+  });
+  await sleep(30);
+}
+await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: midScreen.x, y: midScreen.y + 30, button: 'left' });
+await sleep(150);
+const d13 = Math.round(30 / setup13.zoom / 10) * 10;
+const dragged = await cdp.eval(`(() => {
+  const s = window.__emu.schematic;
+  const p = window.__emu.wirePath('${setup13.id}');
+  return { custom: s.wires.get('${setup13.id}').custom ?? null, p: p.map(q => [q.x, q.y]) };
+})()`);
+const wantPath = JSON.stringify([
+  [view.cx - 70, view.cy], [view.cx - 70, view.cy + d13],
+  [view.cx + 90, view.cy + d13], [view.cx + 90, view.cy],
+]);
+check(
+  'Wire drag pins a manual route',
+  dragged.custom !== null && JSON.stringify(dragged.p) === wantPath,
+  `d=${d13} want=${wantPath} got=${JSON.stringify(dragged.p)} custom=${JSON.stringify(dragged.custom)}`,
+);
+const alt = await cdp.eval(`(() => {
+  const rect = document.querySelector('.canvas-host canvas').getBoundingClientRect();
+  const sc = window.__emu.viewport.worldToScreen(${view.cx + 10}, ${view.cy} + ${d13});
+  return { x: rect.left + sc.x, y: rect.top + sc.y };
+})()`);
+await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: alt.x, y: alt.y, button: 'left', clickCount: 1, modifiers: 1 });
+await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: alt.x, y: alt.y, button: 'left', modifiers: 1 });
+await sleep(150);
+const cleared = await cdp.eval(`(() => {
+  const s = window.__emu.schematic;
+  const ok = !s.wires.get('${setup13.id}').custom;
+  s.removeWire('${setup13.id}');
+  for (const id of ${JSON.stringify(setup13.ids)}) s.remove(id);
+  return ok;
+})()`);
+check('Alt+click restores auto-routing', cleared === true);
+
+// ---- 14: crossing hops exist for unconnected crossing wires ----
+const cross = await cdp.eval(`(() => {
+  const s = window.__emu.schematic;
+  const r1 = s.add('resistor', ${view.cx - 150}, ${view.cy}, { resistance: 220 });
+  const r2 = s.add('resistor', ${view.cx + 90}, ${view.cy}, { resistance: 220 });
+  const r3 = s.add('resistor', ${view.cx - 50}, ${view.cy - 120}, { resistance: 220 });
+  const r4 = s.add('resistor', ${view.cx - 30}, ${view.cy + 120}, { resistance: 220 });
+  const wa = s.wire({ comp: r1.id, pin: 'p2' }, { comp: r2.id, pin: 'p1' });
+  const wb = s.wire({ comp: r3.id, pin: 'p2' }, { comp: r4.id, pin: 'p1' });
+  s.setWirePath(wb.id, [{ x: ${view.cx - 30}, y: ${view.cy - 10} }]);
+  const xs = s.wireCrossings().filter(c => c.w1 === wa.id || c.w2 === wa.id);
+  const ok = xs.length === 1 && xs[0].x === ${view.cx - 30} && xs[0].y === ${view.cy};
+  for (const id of [wa.id, wb.id]) s.removeWire(id);
+  for (const c of [r1, r2, r3, r4]) s.remove(c.id);
+  return { ok, xs: xs.length };
+})()`);
+check('Crossing of two wires detected at the right point', cross.ok === true, JSON.stringify(cross));
+
+// ---- 15: properties dialog edits a resistor live ----
+const resBox = await cdp.eval(`(() => {
+  const s = window.__emu.schematic;
+  const r = s.add('resistor', ${view.cx - 40}, ${view.cy + 150}, { resistance: 220 });
+  const b = s.bodyRect(r);
+  const rect = document.querySelector('.canvas-host canvas').getBoundingClientRect();
+  const sc = window.__emu.viewport.worldToScreen(b.x + b.w / 2, b.y + b.h / 2);
+  return { id: r.id, x: rect.left + sc.x, y: rect.top + sc.y };
+})()`);
+check('Resistor present for dialog test', resBox !== null && resBox.id !== undefined);
+{
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: resBox.x, y: resBox.y, button: 'left', clickCount: 2 });
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: resBox.x, y: resBox.y, button: 'left', clickCount: 2 });
+  await sleep(300);
+  const opened = await cdp.eval(`!!document.querySelector('.dialog')`);
+  const edited = await cdp.eval(`(() => {
+    const inp = document.querySelector('.dialog input');
+    if (!inp) return 'no-input';
+    const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    set.call(inp, '4700');
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('.dialog .btn-run').click();
+    return 'applied';
+  })()`);
+  await sleep(200);
+  const val = await cdp.eval(`window.__emu.schematic.component('${resBox.id}').params.resistance`);
+  const gone = await cdp.eval(`!document.querySelector('.dialog')`);
+  check(
+    'Properties dialog changes resistance and closes',
+    opened && edited === 'applied' && val === 4700 && gone,
+    JSON.stringify({ opened, edited, val, gone }),
+  );
+}
+
+// ---- 16: capacitor part: palette entry, drop params, open circuit ----
+const capUi = await cdp.eval(`[...document.querySelectorAll('.palette-item span')].some(e => e.textContent === 'Capacitor')`);
+const capRun = await cdp.eval(`(() => {
+  const s = window.__emu.schematic;
+  const m = window.__emu.machine;
+  const cap = s.add('cap', 420, 300, { uf: 100 });
+  const r = [...s.components.values()].find(c => c.type === 'resistor');
+  if (!r) return { missing: true };
+  s.wire({ comp: cap.id, pin: 'p1' }, { comp: r.id, pin: 'p2' });
+  s.syncNetlist(m.netlist);
+  const res = m.netlist.resolve();
+  const faults = res.faults.length;
+  const openNet = m.netlist.netOf(cap.id + '.p1') !== m.netlist.netOf(cap.id + '.p2');
+  const routed = window.__emu.wirePath([...s.wires.values()].at(-1).id).length >= 2;
+  return { inSchematic: !!s.components.get(cap.id), faults, openNet, routed };
+})()`);
+check(
+  'Capacitor: palette + schematic + open circuit in netlist',
+  capUi === true && capRun.inSchematic && capRun.faults === 0 && capRun.openNet && capRun.routed,
+  JSON.stringify(capRun),
+);
+const alive = await cdp.eval(`!!window.__emu.schematic.wireRoutes()`);
+check('Render loop still alive after edits', alive === true);
+
 // ---- visual: load the button preset for a screenshot ----
 await cdp.eval(`window.__emu.loadExample('button.ino'); true`);
 await sleep(700);

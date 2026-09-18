@@ -5,6 +5,7 @@ import { Schematic } from './canvas/schematic';
 import { routeWire } from './canvas/routes';
 import { Palette } from './components/Palette';
 import { SchematicCanvas, confirmOr, type CanvasHandles } from './components/SchematicCanvas';
+import { ComponentDialog } from './components/ComponentDialog';
 import { CodeEditor } from './components/CodeEditor';
 import { SerialMonitor } from './components/SerialMonitor';
 import { Toolbar } from './components/Toolbar';
@@ -55,6 +56,7 @@ export function App() {
   const [serialLines, setSerialLines] = useState<readonly SerialLine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [fault, setFault] = useState<string | null>(null);
+  const [configureId, setConfigureId] = useState<string | null>(null);
 
   const [schematic, setSchematic] = useState<Schematic>(loadSchematic);
   const [docEpoch, setDocEpoch] = useState(0); // bumps when a whole doc is swapped in
@@ -84,8 +86,9 @@ export function App() {
 
   const onEdit = useCallback(() => {
     persist();
+    schematic.syncNetlist(machine.netlist); // param edits apply live
     machine.advance(0); // re-solve the circuit for the live view
-  }, [machine, persist]);
+  }, [machine, persist, schematic]);
 
   /** Replace the whole document (example / project / import). */
   const applyDoc = useCallback((next: Schematic, nextSketch?: string) => {
@@ -292,6 +295,7 @@ export function App() {
           speed={speed}
           boardId={boardId}
           onEdit={onEdit}
+          onConfigure={setConfigureId}
           api={canvasApi}
         />
         <div className="right-col">
@@ -302,6 +306,28 @@ export function App() {
           <SerialMonitor lines={serialLines} onClear={() => setSerialLines([])} />
         </div>
       </div>
+      {configureId && (() => {
+        const comp = schematic.component(configureId);
+        if (!comp) return null;
+        return (
+          <ComponentDialog
+            comp={comp}
+            onClose={() => setConfigureId(null)}
+            onApply={(params) => {
+              const entries = Object.entries(params);
+              for (const [k, v] of entries) schematic.setParam(comp.id, k, v);
+              const board = params.board;
+              if (comp.type === 'board' && typeof board === 'string') {
+                // keep the toolbar selector and the machine in sync
+                setBoardId(board);
+              } else if (entries.length > 0) {
+                onEdit();
+              }
+              setConfigureId(null);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }

@@ -149,3 +149,58 @@ describe('routeWiresSequential (mutual wire avoidance)', () => {
     expect(paths[1][1]).toEqual({ x: 0, y: 20 });
   });
 });
+
+describe('A* fallback (never pierces a body)', () => {
+  // two bodies with only a narrow corridor between them: no candidate path
+  // can thread it, so only the grid router can solve this without cutting a
+  // body - the old push-out fallback used to do exactly that
+  const walls: Rect[] = [
+    { x: -40, y: -80, w: 160, h: 84 }, // top wall, gap 30..60 stays open
+    { x: -40, y: 40, w: 160, h: 84 }, // bottom wall
+  ];
+
+  it('routes through the corridor instead of through a wall', () => {
+    const { paths } = { paths: routeWiresSequential([
+      { a: { x: -60, y: 0 }, b: { x: 200, y: 0 }, obstacles: walls, bodies: walls },
+    ]) };
+    const path = paths[0];
+    for (let i = 1; i < path.length; i++) {
+      for (const w of walls) {
+        expect(segmentHitsRect(path[i - 1], path[i], w)).toBe(false);
+      }
+    }
+    // and it really went around, not straight through
+    expect(path.length).toBeGreaterThan(2);
+  });
+
+  it('keeps orthogonal geometry and honors stub directions', () => {
+    const [path] = routeWiresSequential([
+      {
+        a: { x: -60, y: 0 }, b: { x: 200, y: 0 },
+        da: 'right', db: 'right', obstacles: walls, bodies: walls,
+      },
+    ]);
+    for (let i = 1; i < path.length; i++) {
+      expect(path[i - 1].x === path[i].x || path[i - 1].y === path[i].y).toBe(true);
+    }
+    expect(path[1]).toEqual({ x: -40, y: 0 });
+    expect(path[path.length - 2].y).toBe(0);
+  });
+
+  it('prefers crossing a prior wire over crossing a body', () => {
+    // prior wire blocks the only corridor; the body must stay untouched even
+    // though the grid path then pays the soft-crossing cost
+    const prior: Rect[] = [{ x: 40, y: -100, w: 2, h: 200 }];
+    const [path] = routeWiresSequential([
+      { a: { x: -60, y: 0 }, b: { x: 200, y: 10 }, obstacles: walls, bodies: walls },
+      { a: { x: 200, y: -60 }, b: { x: 120, y: 120 }, obstacles: walls.concat(prior), bodies: walls },
+    ]);
+    void path;
+    const second = routeWiresSequential([
+      { a: { x: 200, y: -60 }, b: { x: 120, y: 120 }, obstacles: walls.concat(prior), bodies: walls },
+    ])[0];
+    for (let i = 1; i < second.length; i++) {
+      for (const w of walls) expect(segmentHitsRect(second[i - 1], second[i], w)).toBe(false);
+    }
+  });
+});

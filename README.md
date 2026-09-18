@@ -21,14 +21,22 @@ static server). Tests: `pnpm test` (Vitest). Browser E2E (needs `pnpm run build`
 
 1. **Build the circuit** - drag components from the left palette onto the
    canvas: board, LED (symbol ships with its series resistor, pre-wired),
-   resistor, button, buzzer, battery, plus the ESPHome-style part library:
-   **potentiometer, LDR, DHT11/22, SG90 servo, relay (NO/NC), SSD1306 OLED,
-   WS2812 NeoPixel strip, HC-SR04 ultrasonic ranger**. Preset examples drop
-   these already wired to the right pins.
+   resistor, capacitor, button, buzzer, battery, plus the ESPHome-style part
+   library: **potentiometer, LDR, DHT11/22, SG90 servo, relay (NO/NC), SSD1306
+   OLED, WS2812 NeoPixel strip, HC-SR04 ultrasonic ranger**. The palette is
+   grouped by function (Board, Power, Passive, Outputs, Inputs, Displays).
+   Preset examples drop these already wired to the right pins.
 2. **Wire pins** - press on a pin dot and drag to another pin. Wires are
-   orthogonal and route *around* component bodies and the board. Double-click a
-   wire to delete it; `Del` removes selected components (with connected wires)
-   after a confirm. `R` rotates, shift-click multi-selects, wheel zooms,
+   orthogonal and route *around* component bodies and the board (an A\*
+   fallback guarantees a body-free path even in tight corridors). **Drag a
+   wire segment sideways** to pin a manual route; **Alt+click** a wire
+   restores auto-routing. Wires that cross without being connected get a hop
+   at the crossing point; wires that meet on one net get a solder dot.
+   Double-click a wire to delete it; `Del` removes selected components (with
+   connected wires) after a confirm. **Double-click a component** to open its
+   properties dialog (resistance, capacitance, LED forward voltage, battery
+   volts, NeoPixel count, OLED address, board model, ...); edits apply live,
+   also while running. `R` rotates, shift-click multi-selects, wheel zooms,
    dragging empty space pans. Deleted the board? Drop a new one from the top of
    the palette (*Board*).
 3. **Write the sketch** - Arduino subset in the editor: `setup()/loop()`,
@@ -87,6 +95,8 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
   not a 128x64 pixel framebuffer.
 - Relay contacts are ideal switches; the coil loads the driving pin with
   150 ohms like a real 5V module.
+- Capacitors are ideal open circuits at logic level (no charge/discharge
+  curve - the solver is DC); they place, wire and label (uF/mF) normally.
 
 ## Layout
 
