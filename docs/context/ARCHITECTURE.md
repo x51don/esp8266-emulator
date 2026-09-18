@@ -44,15 +44,19 @@ peripherals/     circuit components (pure logic)
   (more component kinds extend netlist params: buzzer, servo, OLED later)
 gui/             React app + custom canvas engine (DOM allowed only here)
   App.tsx        layout + state: machine per board, transport, persistence (localStorage),
-                 __emu console/CDP hook (schematic, machine, viewport, setSketch)
-  canvas/        viewport.ts grid.ts hit.ts routes.ts (pure, TDD);
-                 schematic.ts document model (syncNetlist -> peripherals/netlist);
+                 __emu console/CDP hook (schematic, machine, viewport, setSketch, loadExample, wirePath)
+  canvas/        viewport.ts grid.ts hit.ts routes.ts (pure, TDD); routes.ts =
+                 obstacle-aware orthogonal router (stub out of bodies, candidate Z/L
+                 at obstacle-edge buses, multi-pass detour); schematic.ts document
+                 model (syncNetlist -> peripherals/netlist, wireObstacles());
                  renderer.ts (canvas layers: grid, board, wires, parts, pins, drag)
   components/    SchematicCanvas.tsx (pointer tools + rAF/SimDriver loop),
                  Toolbar, Palette (HTML5 drag&drop), CodeEditor (CodeMirror 6),
                  SerialMonitor
+  examples.ts    .ino examples + wired circuit presets (loadExample)
+  projects.ts    named projects in localStorage + JSON export/import
   sim/driver.ts  wall->virtual time pump (clamped dt, speed)
-scripts/         verify.mjs (raw-CDP browser E2E, 8 checks), demo.mjs (visual demo shot)
+scripts/         verify.mjs + verify2.mjs (raw-CDP browser E2E), demo.mjs (visual demo shot)
 tests/           Vitest unit + integration tests (one file per module)
 docs/context/    progress journal (read first after restart)
 examples/        example .ino sketches
