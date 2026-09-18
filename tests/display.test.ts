@@ -94,7 +94,44 @@ describe('NeoPixel strip', () => {
       },
     );
     expect(m.serial[0].text).toBe('0');
-    expect(m.strips().get(13)!.pixels.length).toBe(4);
+    expect(m.strips().get(13)!.pixels.length).toBe(8); // physical default, not sketch 4
+  });
+
+  it('physical strip length comes from the component, not the sketch', () => {
+    const m = machine(
+      `void setup(){ npSetup(D7, 8);
+         npPixel(D7, 2, 0, 255, 0);
+         npPixel(D7, 10, 255, 0, 0); }   // past what the sketch declares
+       void loop(){ delay(10); }`,
+      (m) => {
+        m.netlist.addComponent('np1', 'neopixel', { count: 15 });
+        m.netlist.addWire('mcu.D7', 'np1.din');
+      },
+    );
+    const s = m.strips().get(13)!;
+    expect(s.physical).toBe(15);          // hardware: the config wins
+    expect(s.count).toBe(8);              // program drives 8 of them
+    expect(s.pixels.length).toBe(15);     // 15 LEDs rendered
+    expect(s.pixels[2]).toBe(0x00ff00);
+    expect(s.pixels[10]).toBe(0);         // write past the program's count lost
+  });
+
+  it('a sketch longer than the strip loses the extra pixels', () => {
+    const m = machine(
+      `void setup(){ npSetup(D7, 20);
+         npPixel(D7, 3, 1, 2, 3);
+         npPixel(D7, 7, 255, 0, 0); }     // past the physical strip
+       void loop(){ delay(10); }`,
+      (m) => {
+        m.netlist.addComponent('np1', 'neopixel', { count: 5 });
+        m.netlist.addWire('mcu.D7', 'np1.din');
+      },
+    );
+    const s = m.strips().get(13)!;
+    expect(s.physical).toBe(5);
+    expect(s.pixels.length).toBe(5);
+    expect(s.pixels[3]).toBe(0x010203);
+    expect(s.pixels.filter((v) => v !== 0).length).toBe(1); // lost writes, no growth
   });
 
   it('strip length caps at 64', () => {

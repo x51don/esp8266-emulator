@@ -478,7 +478,8 @@ function drawNeopixel(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedCo
   const b = chipBox(ctx, s, body, '#1c232e');
   const gpio = pinGpio(s, c.id, 'din');
   const strip = gpio !== null ? s.machine?.strips().get(gpio) : undefined;
-  const n = Math.min(strip?.count ?? Number(c.params.count ?? 8), 16);
+  const physical = strip?.physical ?? Number(c.params.count ?? 8);
+  const n = Math.min(physical, 16);
   for (let i = 0; i < n; i++) {
     const rgb = strip?.pixels[i] ?? 0;
     ctx.fillStyle = rgb ? `#${rgb.toString(16).padStart(6, '0')}` : '#26303d';
@@ -489,7 +490,7 @@ function drawNeopixel(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedCo
   }
   ctx.fillStyle = C.silk;
   ctx.font = `${Math.max(8, 10 * b.z)}px ui-monospace, monospace`;
-  ctx.fillText(`NEOPIXEL x${strip?.count ?? c.params.count ?? 8}`, b.x + 2, b.y - 5 * b.z);
+  ctx.fillText(`NEOPIXEL x${physical}`, b.x + 2, b.y - 5 * b.z);
 }
 
 function drawBoard(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent): void {

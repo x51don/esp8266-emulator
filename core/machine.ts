@@ -62,7 +62,7 @@ export class Esp8266Machine {
   private servos = new Map<number, number>(); // gpio -> angle (degrees)
   private oleds = new Map<string, { cells: string[] }>(); // compId -> 8x21 grid
   private oledBound: string | null = null;
-  private npStrips = new Map<number, { count: number; pixels: number[] }>();
+  private npStrips = new Map<number, { count: number; physical: number; pixels: number[] }>();
 
   private serialLog: SerialLine[] = [];
   private serialListeners: Array<(line: SerialLine) => void> = [];
@@ -295,7 +295,7 @@ export class Esp8266Machine {
   }
 
   /** NeoPixel strips per data gpio: 0xRRGGBB per led. */
-  strips(): ReadonlyMap<number, { count: number; pixels: number[] }> {
+  strips(): ReadonlyMap<number, { count: number; physical: number; pixels: number[] }> {
     return this.npStrips;
   }
 
@@ -449,15 +449,23 @@ export class Esp8266Machine {
             return { value: 0 }; // immediate model: prints land on the panel
           case 'npSetup': {
             const g = num(args[0]);
-            if (!this.sensorAt('neopixel', g, 'din')) return { value: 0 };
+            const comp = this.sensorAt('neopixel', g, 'din');
+            if (!comp) return { value: 0 };
+            // the strip is the hardware: its configured length wins. The
+            // sketch count only says how far its shift register reaches;
+            // pixels past it keep their (dark) state, writes past the
+            // physical strip fall off the end of the line.
+            const physical = Math.max(1, Math.min(64, Number(comp.params.count ?? 8) || 8));
             const count = Math.max(1, Math.min(64, num(args[1])));
-            this.npStrips.set(g, { count, pixels: Array.from({ length: count }, () => 0) });
+            this.npStrips.set(g, {
+              count, physical, pixels: Array.from({ length: physical }, () => 0),
+            });
             return { value: 1 };
           }
           case 'npPixel': {
             const strip = this.npStrips.get(num(args[0]));
             const i = num(args[1]);
-            if (!strip || i < 0 || i >= strip.count) return { value: 0 };
+            if (!strip || i < 0 || i >= strip.count || i >= strip.pixels.length) return { value: 0 };
             const [r, g2, b] = [num(args[2]), num(args[3]), num(args[4])];
             strip.pixels[i] = ((r & 0xff) << 16) | ((g2 & 0xff) << 8) | (b & 0xff);
             return { value: 0 };
