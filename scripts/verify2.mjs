@@ -244,7 +244,7 @@ check(
 );
 
 // ---- 10: DHT + OLED example drive the panel ----
-await cdp.eval(`window.__emu.machine.stop(); window.__emu.loadExample('dht-oled.ino'); true`);
+await cdp.eval(`document.querySelector('.btn-stop')?.click(), window.__emu.loadExample('dht-oled.ino'); true`);
 await sleep(400);
 await cdp.eval(`document.querySelector('.btn-run').click(); true`);
 await sleep(1500);
@@ -257,7 +257,7 @@ const oled = await cdp.eval(`(() => {
 check('DHT on serial + OLED panel text', oled.rows.some(r => r.includes('ESP8266 lab')) && oled.ser, JSON.stringify(oled).slice(0, 120));
 
 // ---- 11: NeoPixel strip lights while running ----
-await cdp.eval(`window.__emu.machine.stop(); window.__emu.loadExample('neopixel-chase.ino'); true`);
+await cdp.eval(`document.querySelector('.btn-stop')?.click(), window.__emu.loadExample('neopixel-chase.ino'); true`);
 await sleep(400);
 await cdp.eval(`document.querySelector('.btn-run').click(); true`);
 await sleep(900);
@@ -268,7 +268,7 @@ const np = await cdp.eval(`(() => {
 check('NeoPixel strip on D7 lit', np.n === 8 && np.lit > 0, JSON.stringify(np));
 
 // ---- 12: potentiometer drives analogRead live ----
-await cdp.eval(`window.__emu.machine.stop(); window.__emu.loadExample('pot-serial.ino'); true`);
+await cdp.eval(`document.querySelector('.btn-stop')?.click(), window.__emu.loadExample('pot-serial.ino'); true`);
 await sleep(400);
 await cdp.eval(`document.querySelector('.btn-run').click(); true`);
 await sleep(700);
@@ -284,13 +284,13 @@ await sleep(600);
 const lowAdc = await cdp.eval(`(() => { const m = window.__emu.machine.serial.map(l => l.text).join(' ').match(/adc = (\\d+)/g); return m ? parseInt(m[m.length - 1].split(' ')[2]) : -1; })()`);
 check('Pot wiper moves analogRead (0.5 -> ~511, 0 -> ~0)', midAdc > 400 && lowAdc >= 0 && lowAdc < 80, `mid=${midAdc} low=${lowAdc}`);
 void lastAdc;
-await cdp.eval(`window.__emu.machine.stop(); true`);
+await cdp.eval(`document.querySelector('.btn-stop')?.click(); true`);
 
 // ---- 13: dragging a wire segment pins a manual route ----
 // place the parts relative to the CURRENT view so the synthetic mouse
 // events always land inside the window
 const view = await cdp.eval(`(() => {
-  window.__emu.machine.stop();
+  document.querySelector('.btn-stop')?.click();
   const rect = document.querySelector('.canvas-host canvas').getBoundingClientRect();
   const w = window.__emu.viewport.screenToWorld(rect.width / 2 - 60, rect.height / 2 + 120);
   return { cx: Math.round(w.x / 10) * 10, cy: Math.round(w.y / 10) * 10 };
@@ -429,6 +429,69 @@ check(
 );
 const alive = await cdp.eval(`!!window.__emu.schematic.wireRoutes()`);
 check('Render loop still alive after edits', alive === true);
+
+// ---- 17: H mirrors the selection, P opens its properties ----
+const flipBox = await cdp.eval(`(() => {
+  const s = window.__emu.schematic;
+  const r = s.add('resistor', ${view.cx}, ${view.cy + 210}, { resistance: 220 });
+  const b = s.bodyRect(r);
+  const rect = document.querySelector('.canvas-host canvas').getBoundingClientRect();
+  const sc = window.__emu.viewport.worldToScreen(b.x + b.w / 2, b.y + b.h / 2);
+  return { id: r.id, x: rect.left + sc.x, y: rect.top + sc.y };
+})()`);
+await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: flipBox.x, y: flipBox.y, button: 'left', clickCount: 1 });
+await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: flipBox.x, y: flipBox.y, button: 'left', clickCount: 1 });
+await sleep(120);
+const pre17 = await cdp.eval(`(() => ({
+  tag: document.activeElement?.tagName,
+  dlg: !!document.querySelector('.dialog'),
+}))()`);
+await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'h', code: 'KeyH', windowsVirtualKeyCode: 72 });
+await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'h', code: 'KeyH', windowsVirtualKeyCode: 72 });
+await sleep(150);
+const flipped = await cdp.eval(`(() => {
+  const s = window.__emu.schematic;
+  const p1 = s.pinWorld({ comp: '${flipBox.id}', pin: 'p1' });
+  const p2 = s.pinWorld({ comp: '${flipBox.id}', pin: 'p2' });
+  return { flip: !!s.component('${flipBox.id}').flip, p1x: p1.x, p2x: p2.x };
+})()`);
+check(
+  'H mirrors the selected component',
+  flipped.flip === true && flipped.p1x > flipped.p2x,
+  JSON.stringify({ ...flipped, ...pre17 }),
+);
+await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'p', code: 'KeyP', windowsVirtualKeyCode: 80 });
+await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'p', code: 'KeyP', windowsVirtualKeyCode: 80 });
+await sleep(250);
+const pKey = await cdp.eval(`(() => {
+  const d = document.querySelector('.dialog');
+  const ok = !!d && d.textContent.includes('Resistance');
+  if (d) [...d.querySelectorAll('button')].find(b => /cancel/i.test(b.textContent))?.click();
+  return ok;
+})()`);
+check('P opens the properties dialog of the selection', pKey === true);
+
+// ---- 18: double-click on the value label (above the body) opens it too ----
+const labelDbl = await cdp.eval(`(() => {
+  const rect = document.querySelector('.canvas-host canvas').getBoundingClientRect();
+  const b = window.__emu.schematic.bodyRect(window.__emu.schematic.component('${flipBox.id}'));
+  const sc = window.__emu.viewport.worldToScreen(b.x + b.w / 2, b.y - 4);
+  return { x: rect.left + sc.x, y: rect.top + sc.y };
+})()`);
+for (const [cc, type] of [[1, 'mousePressed'], [1, 'mouseReleased'], [2, 'mousePressed'], [2, 'mouseReleased']]) {
+  await cdp.send('Input.dispatchMouseEvent', { type, x: labelDbl.x, y: labelDbl.y, button: 'left', clickCount: cc });
+}
+await sleep(250);
+const labelOk = await cdp.eval(`(() => {
+  const d = document.querySelector('.dialog');
+  const ok = !!d && d.textContent.includes('Resistance');
+  if (d) [...d.querySelectorAll('button')].find(b => /cancel/i.test(b.textContent))?.click();
+  window.__emu.schematic.remove('${flipBox.id}');
+  return ok;
+})()`);
+check('Double-click on the value label opens properties', labelOk === true);
+const alive2 = await cdp.eval(`!!window.__emu.schematic.wireRoutes()`);
+check('Render loop alive after flip/label tests', alive2 === true);
 
 // ---- visual: load the button preset for a screenshot ----
 await cdp.eval(`window.__emu.loadExample('button.ino'); true`);

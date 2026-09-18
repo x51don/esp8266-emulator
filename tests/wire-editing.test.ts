@@ -136,3 +136,49 @@ describe('body-blocked routing in a schematic', () => {
     }
   });
 });
+
+describe('horizontal flip', () => {
+  it('mirrors pins about the body centre', () => {
+    const s = new Schematic();
+    const led = s.add('led', 100, 100, {});
+    s.flip(led.id);
+    // led body x=-6 w=32 -> centre x=10; a(0,0)<->k(20,0)
+    expect(s.pinWorld({ comp: led.id, pin: 'a' })).toEqual({ x: 120, y: 100 });
+    expect(s.pinWorld({ comp: led.id, pin: 'k' })).toEqual({ x: 100, y: 100 });
+    // a second flip restores the original positions
+    s.flip(led.id);
+    expect(s.pinWorld({ comp: led.id, pin: 'a' })).toEqual({ x: 100, y: 100 });
+    expect(s.pinWorld({ comp: led.id, pin: 'k' })).toEqual({ x: 120, y: 100 });
+  });
+
+  it('flip applies before rotation', () => {
+    const s = new Schematic();
+    const r = s.add('resistor', 200, 150, { resistance: 1 });
+    s.rotate(r.id); // 90 deg
+    s.flip(r.id);
+    // resistor body x=2 w=16 -> centre 10; p1(0,0)->(20,0)->rot90->(0,20)
+    expect(s.pinWorld({ comp: r.id, pin: 'p1' })).toEqual({ x: 200, y: 170 });
+    // p2(20,0)->(0,0)->rot90->(0,0)
+    expect(s.pinWorld({ comp: r.id, pin: 'p2' })).toEqual({ x: 200, y: 150 });
+  });
+
+  it('flip round-trips through the document', () => {
+    const s = new Schematic();
+    const d = s.add('dht', 100, 100, {});
+    s.flip(d.id);
+    const t = Schematic.fromJSON(s.toJSON());
+    expect(t.component(d.id)!.flip).toBe(true);
+    expect(t.pinWorld({ comp: d.id, pin: 'data' })).toEqual(s.pinWorld({ comp: d.id, pin: 'data' }));
+  });
+
+  it('routing honours flipped stub directions', () => {
+    const s = new Schematic();
+    const a = s.add('resistor', 100, 100, { resistance: 1 });
+    const b = s.add('resistor', 300, 100, { resistance: 1 });
+    s.flip(a.id); // p2 now leaves to the LEFT of the body
+    const w = s.wire({ comp: a.id, pin: 'p2' }, { comp: b.id, pin: 'p1' });
+    const path = s.wireRoutes().get(w.id)!;
+    expect(path[0]).toEqual({ x: 100, y: 100 }); // mirrored p2 sits at body's left
+    expect(path[0].x < 120).toBe(true);
+  });
+});

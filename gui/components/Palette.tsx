@@ -87,7 +87,7 @@ export function Palette() {
           drag pins to wire · drag empty space to pan · wheel to zoom
         </p>
         <p>
-          <b>R</b> rotate · <b>Del</b> remove · <b>dbl-click</b> part = properties
+          <b>R</b> rotate · <b>H</b> mirror · <b>P</b> properties · <b>Del</b> remove · <b>dbl-click</b> part = properties
         </p>
         <p>
           drag a wire segment to shape it · <b>Alt+click</b> a wire = auto-route again · <b>dbl-click</b> a wire removes it

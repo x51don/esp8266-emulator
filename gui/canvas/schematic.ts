@@ -25,6 +25,8 @@ export interface PlacedComponent {
   x: number;
   y: number;
   rot: Rot;
+  /** mirror the symbol horizontally about the body centre (before rot) */
+  flip?: boolean;
   params: Record<string, unknown>;
 }
 
@@ -243,6 +245,13 @@ export class Schematic {
     this.touch();
   }
 
+  /** Toggle the horizontal mirror of a component. */
+  flip(id: string): void {
+    const c = this.components.get(id);
+    if (c) c.flip = !c.flip;
+    this.touch();
+  }
+
   /** Live-tune a parameter (pot ratio, sensor values). */
   setParam(id: string, key: string, value: unknown): void {
     const c = this.components.get(id);
@@ -285,9 +294,13 @@ export class Schematic {
   pinWorld(ref: TerminalRef): Pt {
     const c = this.components.get(ref.comp);
     if (!c) throw new Error(`no component '${ref.comp}'`);
-    const pin = footprintFor(c.type, c.params).pins.find((p) => p.name === ref.pin);
+    const fp = footprintFor(c.type, c.params);
+    const pin = fp.pins.find((p) => p.name === ref.pin);
     if (!pin) throw new Error(`component '${ref.comp}' has no pin '${ref.pin}'`);
-    const r = rotatePoint({ x: pin.x, y: pin.y }, c.rot);
+    const lp = c.flip
+      ? { x: 2 * fp.body.x + fp.body.w - pin.x, y: pin.y }
+      : { x: pin.x, y: pin.y };
+    const r = rotatePoint(lp, c.rot);
     return { x: c.x + r.x, y: c.y + r.y };
   }
 

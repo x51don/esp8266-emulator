@@ -153,13 +153,19 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
     return { comp: hit.slice(0, dot), pin: hit.slice(dot + 1) };
   };
 
-  const findComponent = (w: Pt): string | null => {
-    // topmost = last added wins
+  const findComponent = (w: Pt, labelBand = false): string | null => {
+    // topmost = last added wins; `labelBand` also accepts the value label
+    // strip drawn just above the body (double-click target, screen ~16px)
     const ids = [...schematic.components.keys()].reverse();
+    const pad = labelBand ? 16 / vpRef.current.zoom : 0;
     for (const id of ids) {
       const c = schematic.component(id)!;
       const b = schematic.bodyRect(c);
-      if (w.x >= b.x && w.x < b.x + b.w && w.y >= b.y && w.y < b.y + b.h) return id;
+      if (
+        w.x >= b.x && w.x < b.x + b.w &&
+        w.y >= b.y - pad && w.y < b.y + b.h
+      )
+        return id;
     }
     return null;
   };
@@ -201,6 +207,11 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
   const onDoubleClick = (e: React.MouseEvent): void => {
     const rect = canvasRef.current!.getBoundingClientRect();
     const w = vpRef.current.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+    const comp = findComponent(w);
+    if (comp) {
+      onConfigure(comp);
+      return;
+    }
     const id = findWire(w);
     if (id) {
       if (!confirmOr('Remove this wire?')) return;
@@ -208,8 +219,8 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
       onEdit();
       return;
     }
-    const comp = findComponent(w);
-    if (comp) onConfigure(comp);
+    const near = findComponent(w, true);
+    if (near) onConfigure(near);
   };
 
   // ---- events ----
@@ -400,6 +411,20 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
       } else if (e.key === 'r' || e.key === 'R') {
         for (const id of selectionRef.current) schematic.rotate(id);
         if (selectionRef.current.size) onEdit();
+      } else if (e.key === 'h' || e.key === 'H') {
+        for (const id of selectionRef.current) schematic.flip(id);
+        if (selectionRef.current.size) onEdit();
+      } else if (e.key === 'p' || e.key === 'P') {
+        // properties for the selected component(s) - opens the dialog for
+        // the topmost selected one; works while the machine is running
+        const sel = [...selectionRef.current];
+        for (let i = sel.length - 1; i >= 0; i--) {
+          const c = schematic.component(sel[i]);
+          if (c) {
+            onConfigure(c.id);
+            return;
+          }
+        }
       } else if (e.key === 'Escape') {
         toolRef.current = { kind: 'idle' };
         selectionRef.current = new Set();
@@ -407,7 +432,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [schematic, onEdit]);
+  }, [schematic, onEdit, onConfigure]);
 
   // palette drop
   const onDrop = (e: React.DragEvent): void => {

@@ -344,11 +344,12 @@ function drawCap(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedCompone
   const mid = b.x + b.w / 2;
   ctx.strokeStyle = C.silk;
   ctx.lineWidth = 2;
+  const f = c.flip ? -1 : 1; // curved plate faces p2; mirror with flip
   ctx.beginPath();
-  ctx.moveTo(mid - 3 * b.z, b.y + 2 * b.z);
-  ctx.lineTo(mid - 3 * b.z, b.y + b.h - 2 * b.z);
-  ctx.moveTo(mid + 3 * b.z, b.y + 4 * b.z);
-  ctx.arcTo(mid + 9 * b.z, b.y + b.h / 2, mid + 3 * b.z, b.y + b.h - 4 * b.z, 6 * b.z);
+  ctx.moveTo(mid - 3 * f * b.z, b.y + 2 * b.z);
+  ctx.lineTo(mid - 3 * f * b.z, b.y + b.h - 2 * b.z);
+  ctx.moveTo(mid + 3 * f * b.z, b.y + 4 * b.z);
+  ctx.arcTo(mid + 9 * f * b.z, b.y + b.h / 2, mid + 3 * f * b.z, b.y + b.h - 4 * b.z, 6 * b.z);
   ctx.stroke();
   ctx.lineWidth = 1;
   const uf = Number(c.params.uf ?? 100);
@@ -367,7 +368,7 @@ function drawPot(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedCompone
   ctx.fill();
   ctx.stroke();
   const ratio = Math.min(1, Math.max(0, Number(c.params.ratio ?? 0.5)));
-  const wx = b.x + ratio * b.w;
+  const wx = c.flip ? b.x + b.w - ratio * b.w : b.x + ratio * b.w;
   ctx.strokeStyle = C.text;
   ctx.beginPath();
   ctx.moveTo(wx, b.y - 6 * b.z);
@@ -482,7 +483,8 @@ function drawNeopixel(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedCo
     const rgb = strip?.pixels[i] ?? 0;
     ctx.fillStyle = rgb ? `#${rgb.toString(16).padStart(6, '0')}` : '#26303d';
     ctx.beginPath();
-    ctx.arc(b.x + ((i + 0.5) * b.w) / n, b.y + b.h * 0.55, Math.min(5 * b.z, b.w / n / 2.4), 0, Math.PI * 2);
+    const px = c.flip ? b.x + b.w - ((i + 0.5) * b.w) / n : b.x + ((i + 0.5) * b.w) / n;
+    ctx.arc(px, b.y + b.h * 0.55, Math.min(5 * b.z, b.w / n / 2.4), 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.fillStyle = C.silk;

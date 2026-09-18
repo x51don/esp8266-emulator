@@ -36,7 +36,8 @@ static server). Tests: `pnpm test` (Vitest). Browser E2E (needs `pnpm run build`
    connected wires) after a confirm. **Double-click a component** to open its
    properties dialog (resistance, capacitance, LED forward voltage, battery
    volts, NeoPixel count, OLED address, board model, ...); edits apply live,
-   also while running. `R` rotates, shift-click multi-selects, wheel zooms,
+   also while running. With a selection: `H` mirrors the component
+   horizontally (diode direction and friends), `P` opens its properties. `R` rotates, shift-click multi-selects, wheel zooms,
    dragging empty space pans. Deleted the board? Drop a new one from the top of
    the palette (*Board*).
 3. **Write the sketch** - Arduino subset in the editor: `setup()/loop()`,
