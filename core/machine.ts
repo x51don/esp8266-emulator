@@ -59,6 +59,10 @@ export class Esp8266Machine {
   private alarms = new Map<number, Alarm>();
   private isrQueue: string[] = [];
   private lastCircuit: ResolveResult | null = null;
+  private servos = new Map<number, number>(); // gpio -> angle (degrees)
+  private oleds = new Map<string, { cells: string[] }>(); // compId -> 8x21 grid
+  private oledBound: string | null = null;
+  private npStrips = new Map<number, { count: number; pixels: number[] }>();
 
   private serialLog: SerialLine[] = [];
   private serialListeners: Array<(line: SerialLine) => void> = [];
@@ -126,6 +130,10 @@ export class Esp8266Machine {
   }
 
   reset(): void {
+    this.servos.clear();
+    this.oleds.clear();
+    this.oledBound = null;
+    this.npStrips.clear();
     this.halt();
     this.clock.restart();
     this.gpio.reset();
@@ -281,6 +289,42 @@ export class Esp8266Machine {
     }
   }
 
+  /** Text frames of every OLED bound so far (8 rows x 21 chars). */
+  oledFrames(): ReadonlyMap<string, { cells: string[] }> {
+    return this.oleds;
+  }
+
+  /** NeoPixel strips per data gpio: 0xRRGGBB per led. */
+  strips(): ReadonlyMap<number, { count: number; pixels: number[] }> {
+    return this.npStrips;
+  }
+
+  /** Servo arm angles driven so far (for the schematic renderer). */
+  servoAngles(): ReadonlyMap<number, number> {
+    return this.servos;
+  }
+
+  /** First component of `type` whose `dataPin` net touches this gpio's pin. */
+  private sensorAt(type: string, gpio: number, dataPin: string) {
+    const label = getBoard(this.boardId).labelFor(gpio);
+    if (!label) return null;
+    for (const c of this.netlist.componentsOfType(type)) {
+      if (this.netlist.sameNet(`mcu.${label}`, `${c.id}.${dataPin}`)) return c;
+    }
+    return null;
+  }
+
+  /**
+   * ADC conversion of the voltage netlist.analogVolts reports on A0.
+   * Only GPIO 17 (the Arduino A0 alias) has an ADC on the ESP8266.
+   */
+  analogRead(gpio: number): number {
+    if (gpio !== 17) return 0;
+    const v = this.netlist.analogVolts('mcu.A0');
+    if (v === null) return 0;
+    return Math.max(0, Math.min(1023, Math.round((v / 3.3) * 1023)));
+  }
+
   // ---------- Arduino API ----------
 
   private env() {
@@ -292,6 +336,7 @@ export class Esp8266Machine {
       CHANGE: 0, FALLING: 1, RISING: 2, ON: 1, OFF: 0,
       PI: Math.PI, HALF_PI: Math.PI / 2, TWO_PI: 2 * Math.PI,
       timer0: 0, timer1: 1,
+      A0: 17, // ESP8266 Arduino core: analogRead() uses pin 17
     };
     for (let d = 0; d <= 8; d++) {
       const gpio = board.gpioFor(`D${d}`);
@@ -331,8 +376,94 @@ export class Esp8266Machine {
           case 'analogWrite':
             this.gpio.analogWrite(num(args[0]), num(args[1]));
             return { value: 0 };
-          case 'analogRead': // no ADC model yet: full-scale input
+          case 'analogRead':
+            return { value: this.analogRead(num(args[0])) };
+          case 'dhtSetup':
+            return { value: this.sensorAt('dht', num(args[0]), 'data') ? 1 : 0 };
+          case 'dhtReadTemperature': {
+            const c = this.sensorAt('dht', num(args[0]), 'data');
+            return { value: c ? Number(c.params.tempC ?? 22) : -999 };
+          }
+          case 'dhtReadHumidity': {
+            const c = this.sensorAt('dht', num(args[0]), 'data');
+            return { value: c ? Number(c.params.humPct ?? 50) : -999 };
+          }
+          case 'hcsrSetup': {
+            const t = this.sensorAt('hcsr', num(args[0]), 'trig');
+            const e = this.sensorAt('hcsr', num(args[1]), 'echo');
+            return { value: t && t === e ? 1 : 0 };
+          }
+          case 'hcsrDistanceCm': {
+            const c = this.sensorAt('hcsr', num(args[0]), 'echo');
+            return { value: c ? Number(c.params.cm ?? 0) : -999 };
+          }
+          case 'hcsrPulseUs': {
+            const c = this.sensorAt('hcsr', num(args[0]), 'echo');
+            return { value: c ? Math.round(Number(c.params.cm ?? 0) * 58) : -999 };
+          }
+          case 'servoAttach': {
+            const g = num(args[0]);
+            if (!this.sensorAt('servo', g, 'sig')) return { value: 0 };
+            if (!this.servos.has(g)) this.servos.set(g, 90);
+            return { value: 1 };
+          }
+          case 'servoWrite': {
+            const g = num(args[0]);
+            this.servos.set(g, Math.max(0, Math.min(180, num(args[1]))));
             return { value: 0 };
+          }
+          case 'servoRead':
+            return { value: this.servos.get(num(args[0])) ?? 0 };
+          case 'oledBegin': {
+            const addr = args.length ? num(args[0]) : 0x3c;
+            const panel = this.netlist
+              .componentsOfType('oled')
+              .find((c) => Number(c.params.addr ?? 0x3c) === addr);
+            if (!panel) return { value: 0 };
+            this.oledBound = panel.id;
+            if (!this.oleds.has(panel.id)) {
+              this.oleds.set(panel.id, { cells: Array.from({ length: 8 }, () => ' '.repeat(21)) });
+            }
+            return { value: 1 };
+          }
+          case 'oledClear': {
+            const f = this.oledBound && this.oleds.get(this.oledBound);
+            if (f) f.cells = Array.from({ length: 8 }, () => ' '.repeat(21));
+            return { value: 0 };
+          }
+          case 'oledPrint': {
+            const f = this.oledBound && this.oleds.get(this.oledBound);
+            if (!f) return { value: 0 };
+            const x = num(args[0]);
+            const y = num(args[1]);
+            if (y < 0 || y > 7) return { value: 0 };
+            const row = f.cells[y].split('');
+            const text = str(args[2]);
+            for (let i = 0; i < text.length && x + i < 21; i++) {
+              if (x + i >= 0) row[x + i] = text[i];
+            }
+            f.cells[y] = row.join('');
+            return { value: 0 };
+          }
+          case 'oledShow':
+            return { value: 0 }; // immediate model: prints land on the panel
+          case 'npSetup': {
+            const g = num(args[0]);
+            if (!this.sensorAt('neopixel', g, 'din')) return { value: 0 };
+            const count = Math.max(1, Math.min(64, num(args[1])));
+            this.npStrips.set(g, { count, pixels: Array.from({ length: count }, () => 0) });
+            return { value: 1 };
+          }
+          case 'npPixel': {
+            const strip = this.npStrips.get(num(args[0]));
+            const i = num(args[1]);
+            if (!strip || i < 0 || i >= strip.count) return { value: 0 };
+            const [r, g2, b] = [num(args[2]), num(args[3]), num(args[4])];
+            strip.pixels[i] = ((r & 0xff) << 16) | ((g2 & 0xff) << 8) | (b & 0xff);
+            return { value: 0 };
+          }
+          case 'npShow':
+            return { value: 0 }; // colors land immediately; kept for API parity
           case 'delay':
             return { suspend: { kind: 'delay', us: Math.max(0, num(args[0]) * 1000) } };
           case 'delayMicroseconds':

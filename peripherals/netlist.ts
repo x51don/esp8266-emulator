@@ -144,6 +144,29 @@ export class Netlist {
       } else if (c.type === 'button' && this.isSwitchClosed(c.id)) {
         if (term(c.id, 'p1') === t) out.push([term(c.id, 'p2'), 0]);
         else if (term(c.id, 'p2') === t) out.push([term(c.id, 'p1'), 0]);
+      } else if (c.type === 'pot') {
+        // 10k element; ratio 0 => wiper at p2, 1 => at p1.
+        const r = 10_000;
+        const ratio = Math.min(1, Math.max(0, Number(c.params.ratio ?? 0.5)));
+        if (term(c.id, 'p1') === t) out.push([term(c.id, 'w'), Math.max(1, (1 - ratio) * r)]);
+        else if (term(c.id, 'p2') === t) out.push([term(c.id, 'w'), Math.max(1, ratio * r)]);
+        else if (term(c.id, 'w') === t) {
+          out.push([term(c.id, 'p1'), Math.max(1, (1 - ratio) * r)]);
+          out.push([term(c.id, 'p2'), Math.max(1, ratio * r)]);
+        }
+      } else if (c.type === 'relay') {
+        // 150-ohm coil; contacts follow coil power (NC without power).
+        if (term(c.id, 'coilp') === t) out.push([term(c.id, 'coiln'), 150]);
+        else if (term(c.id, 'coiln') === t) out.push([term(c.id, 'coilp'), 150]);
+        else {
+          const [x, y] = this.coilEnergized(c) ? ['sw', 'no'] : ['sw', 'nc'];
+          if (term(c.id, x) === t) out.push([term(c.id, y), 0]);
+          else if (term(c.id, y) === t) out.push([term(c.id, x), 0]);
+        }
+      } else if (c.type === 'ldr') {
+        const r = ldrOhms(Number(c.params.lux ?? 1000));
+        if (term(c.id, 'p1') === t) out.push([term(c.id, 'p2'), r]);
+        else if (term(c.id, 'p2') === t) out.push([term(c.id, 'p1'), r]);
       }
     }
     return out;
@@ -303,6 +326,52 @@ export class Netlist {
     return { leds, pinLevels, externals, faults, netOf, netVoltage };
   }
 
+  /** True when both terminals join through wires / closed switches. */
+  sameNet(a: string, b: string): boolean {
+    try {
+      return this.netOf(a) === this.netOf(b);
+    } catch {
+      return false;
+    }
+  }
+
+  componentsOfType(type: string): ComponentDef[] {
+    return [...this.comps.values()].filter((c) => c.type === type);
+  }
+
+  private coilGuard = new Set<string>();
+
+  /** Relay coil: a >2V source on coilp and a GND path on coiln energize it. */
+  private coilEnergized(c: ComponentDef): boolean {
+    if (this.coilGuard.has(c.id)) return false; // re-entrant: assume released
+    this.coilGuard.add(c.id);
+    try {
+      const hi = this.bestSource(term(c.id, 'coilp'));
+      if (!hi || hi.src.v < 2 || hi.r > 100_000) return false;
+      const lo = this.bestSink(term(c.id, 'coiln'));
+      return !!lo && lo.src.v <= 1.65 && lo.r <= 100_000;
+    } finally {
+      this.coilGuard.delete(c.id);
+    }
+  }
+
+  /**
+   * Voltage a high-impedance ADC input would see at this terminal:
+   * Thevenin blend of the strongest source and sink with their path
+   * resistances (works for pot wipers and resistor/LDR dividers).
+   * Null when the node floats.
+   */
+  analogVolts(t: string): number | null {
+    const list = this.reachSources(t);
+    if (!list.length) return null;
+    const hi = [...list].sort((a, b) => b.src.v - a.src.v || a.r - b.r)[0];
+    const lo = [...list].sort((a, b) => a.src.v - b.src.v || a.r - b.r)[0];
+    if (hi.src.v === lo.src.v) return hi.src.v;
+    const den = hi.r + lo.r;
+    if (den === 0) return hi.src.v;
+    return (lo.src.v * hi.r + hi.src.v * lo.r) / den;
+  }
+
   private pinsOf(c: ComponentDef): string[] {
     if (Array.isArray(c.params.pins)) return c.params.pins as string[];
     switch (c.type) {
@@ -310,6 +379,14 @@ export class Netlist {
       case 'led': return ['a', 'k'];
       case 'button': return ['p1', 'p2'];
       case 'buzzer': return ['+', '-'];
+      case 'pot': return ['p1', 'w', 'p2'];
+      case 'ldr': return ['p1', 'p2'];
+      case 'dht': return ['vcc', 'data', 'gnd'];
+      case 'hcsr': return ['vcc', 'trig', 'echo', 'gnd'];
+      case 'servo': return ['sig', 'vcc', 'gnd'];
+      case 'relay': return ['coilp', 'coiln', 'sw', 'no', 'nc'];
+      case 'oled': return ['vcc', 'gnd', 'sda', 'scl'];
+      case 'neopixel': return ['din', 'vcc', 'gnd'];
       default: return [];
     }
   }
@@ -329,3 +406,9 @@ function pinSource(bus: GpioBus, gpio: number): Source | null {
   }
 }
 
+
+/** CdS photoresistor curve: ~1M in the dark, ~2k in sunlight. */
+export function ldrOhms(lux: number): number {
+  const l = Math.max(1, lux);
+  return Math.min(1_000_000, Math.max(500, Math.round(1_000_000 / Math.pow(l, 0.7))));
+}
