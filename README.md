@@ -19,9 +19,12 @@ static server). Tests: `pnpm test` (Vitest). Browser E2E (needs `pnpm run build`
 
 ## Using it
 
-1. **Build the circuit** - drag components (LED, resistor, button, buzzer,
-   battery) from the left palette onto the canvas. Drop the LED next to a board
-   pin: the LED symbol ships with its series resistor, pre-wired.
+1. **Build the circuit** - drag components from the left palette onto the
+   canvas: board, LED (symbol ships with its series resistor, pre-wired),
+   resistor, button, buzzer, battery, plus the ESPHome-style part library:
+   **potentiometer, LDR, DHT11/22, SG90 servo, relay (NO/NC), SSD1306 OLED,
+   WS2812 NeoPixel strip, HC-SR04 ultrasonic ranger**. Preset examples drop
+   these already wired to the right pins.
 2. **Wire pins** - press on a pin dot and drag to another pin. Wires are
    orthogonal and route *around* component bodies and the board. Double-click a
    wire to delete it; `Del` removes selected components (with connected wires)
@@ -31,13 +34,25 @@ static server). Tests: `pnpm test` (Vitest). Browser E2E (needs `pnpm run build`
 3. **Write the sketch** - Arduino subset in the editor: `setup()/loop()`,
    `pinMode/digitalWrite/digitalRead/analogWrite`, `delay/delayMicroseconds`,
    `Serial.begin/print/println/printf/write`, `millis/micros`,
-   `timerAlarmWrite/timerAlarmEnable` (cooperative ISRs), `String/map/min/max...`.
+   `timerAlarmWrite/timerAlarmEnable` (cooperative ISRs), `String/map/min/max...`
+   - and the part-library API (plain C-style functions, no classes):
+   `analogRead(A0)`, `dhtSetup/dhtReadTemperature/dhtReadHumidity`,
+   `hcsrSetup/hcsrDistanceCm/hcsrPulseUs`, `servoAttach/servoWrite/servoRead`,
+   `oledBegin/oledClear/oledPrint/oledShow`, `npSetup/npPixel/npShow`.
+   Sensors are found by wiring: the call matches the component of that type
+   whose data pin sits on the same net as the board pin passed in
+   (`dhtReadTemperature(D4)` reads the DHT wired to D4); unwired reads return
+   `-999` (DHT) or behave like a floating pin.
    *Examples* loads a sketch **with a matching wired circuit preset** (blink,
-   pwm-fade, button, serial-hello); it asks before replacing your work.
+   pwm-fade, button, serial-hello, pot-serial, ldr-led, dht-oled, servo-pot,
+   neopixel-chase, hcsr-serial, relay-pump); it asks before replacing your work.
 4. **Run** - the toolbar Run loads the sketch and cold-starts the virtual chip.
    Wires and pin dots light up yellow on HIGH; LEDs glow (and burn out when
-   wired without a resistor). While running, click a button to hold it; the
-   speed selector scales wall -> virtual time (up to 64x). Stop freezes; Reset
+   wired without a resistor). While running, click a button to hold it and
+   **drag pot / LDR / DHT / HC-SR04 bodies to change their values live**
+   (pot: wiper, LDR: 10 lx..100 klx, DHT: temp sideways + humidity up/down,
+   HC-SR04: target distance). Servo arms, the OLED panel and NeoPixel leds
+   animate from the machine state; the relay contact arm follows its coil. Stop freezes; Reset
    is a cold chip reset. Faults (shorts, bus contention, burnt LEDs) appear in
    the toolbar banner.
 5. **Save & share** - *Save* stores the whole project (sketch + circuit +
@@ -63,7 +78,15 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
   preempting it.
 - A `loop()` without any `delay()` spins the scheduler guard, mirroring a real
   CPU hogging the watchdog.
-- Circuit model is logic-level with LED current limits and pull-ups; not SPICE.
+- Circuit model is logic-level with LED current limits and pull-ups; analog
+  inputs use an ideal Thevenin divider (pot = ideal 10k tap, LDR = CdS curve),
+  A0 is the only analog input (0..1023).
+- The part API is C-style (`dhtReadTemperature(D4)`), not library classes -
+  the sketch language has no objects.
+- OLED renders an 8x21 text grid (what SSD1306 Arduino sketches display),
+  not a 128x64 pixel framebuffer.
+- Relay contacts are ideal switches; the coil loads the driving pin with
+  150 ohms like a real 5V module.
 
 ## Layout
 
@@ -71,8 +94,9 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
 core/          clock, registers, machine facade, boards, sketch interpreter
 peripherals/   GPIO bus, circuit netlist solver
 gui/           React app: canvas engine, components, sim driver
-scripts/       verify.mjs + verify2.mjs (headless-CDP E2E), demo.mjs
-examples/      blink, pwm-fade, button, serial-hello
+scripts/       verify.mjs + verify2.mjs + verify3.mjs (headless-CDP E2E), demo.mjs
+examples/      blink, pwm-fade, button, serial-hello, pot-serial, ldr-led,
+               dht-oled, servo-pot, neopixel-chase, hcsr-serial, relay-pump
 tests/         Vitest suites, one per logic module
 docs/context/  architecture + milestone journals
 ```
