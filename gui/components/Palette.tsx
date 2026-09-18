@@ -4,6 +4,7 @@
  */
 
 const ITEMS: Array<{ type: string; label: string; hint: string; glyph: string }> = [
+  { type: 'board', label: 'Board', hint: 'ESP8266 board (current model from the toolbar)', glyph: '▭' },
   { type: 'led', label: 'LED', hint: 'symbol + 220R, wire p1 to a pin', glyph: '◉' },
   { type: 'resistor', label: 'Resistor', hint: '220R default', glyph: '≡' },
   { type: 'button', label: 'Button', hint: 'momentary (click while running)', glyph: '⊓' },

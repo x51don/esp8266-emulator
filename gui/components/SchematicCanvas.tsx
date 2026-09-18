@@ -6,8 +6,9 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { Esp8266Machine } from '../../core/machine';
-import { nearestPin } from '../canvas/hit';
-import { renderScene } from '../canvas/renderer';
+import { nearestPin, polylineHit } from '../canvas/hit';
+import { renderScene, pinDir } from '../canvas/renderer';
+import { routeWire } from '../canvas/routes';
 import { snapToGrid } from '../canvas/grid';
 import type { Schematic, TerminalRef } from '../canvas/schematic';
 import { SimDriver } from '../sim/driver';
@@ -18,11 +19,18 @@ export interface CanvasHandles {
   fitTo: () => void;
 }
 
+/** Native dialogs can be silenced for automation. */
+export function confirmOr(msg: string): boolean {
+  if ((window as unknown as Record<string, unknown>).__noConfirm) return true;
+  return window.confirm(msg);
+}
+
 interface Props {
   schematic: Schematic;
   machine: Esp8266Machine;
   running: boolean;
   speed: number;
+  boardId: string;
   onEdit: () => void; // schematic changed -> App re-syncs netlist + persists
   api: React.MutableRefObject<CanvasHandles | null>;
 }
@@ -33,7 +41,7 @@ type Tool =
   | { kind: 'move'; ids: string[]; startWorld: Pt; startPos: Map<string, Pt> }
   | { kind: 'wire'; from: TerminalRef; cursor: Pt };
 
-export function SchematicCanvas({ schematic, machine, running, speed, onEdit, api }: Props) {
+export function SchematicCanvas({ schematic, machine, running, speed, boardId, onEdit, api }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const vpRef = useRef(new Viewport());
@@ -144,6 +152,40 @@ export function SchematicCanvas({ schematic, machine, running, speed, onEdit, ap
     return null;
   };
 
+  /** Wire whose routed polyline passes near w (double-click to remove). */
+  const findWire = (w: Pt): string | null => {
+    const tol = 6 / vpRef.current.zoom;
+    for (const wire of schematic.wires.values()) {
+      let pinA: Pt;
+      let pinB: Pt;
+      try {
+        pinA = schematic.pinWorld(wire.a);
+        pinB = schematic.pinWorld(wire.b);
+      } catch {
+        continue; // dangling reference mid-edit
+      }
+      const path = routeWire(
+        pinA, pinB,
+        pinDir(schematic, wire.a, pinA),
+        pinDir(schematic, wire.b, pinB),
+        schematic.wireObstacles(wire.a, wire.b),
+      );
+      if (polylineHit(path, w, tol)) return wire.id;
+    }
+    return null;
+  };
+
+  // dbl-click a wire -> confirm -> remove just that wire
+  const onDoubleClick = (e: React.MouseEvent): void => {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    const w = vpRef.current.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+    const id = findWire(w);
+    if (!id) return;
+    if (!confirmOr('Remove this wire?')) return;
+    schematic.removeWire(id);
+    onEdit();
+  };
+
   // ---- events ----
   const onPointerDown = (e: React.PointerEvent): void => {
     try {
@@ -250,8 +292,14 @@ export function SchematicCanvas({ schematic, machine, running, speed, onEdit, ap
       const tag = (e.target as HTMLElement).tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable) return;
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectionRef.current.size === 0) return;
-        for (const id of selectionRef.current) schematic.remove(id);
+        const sel = [...selectionRef.current];
+        if (sel.length === 0) return;
+        let wires = 0;
+        for (const w of schematic.wires.values())
+          if (sel.includes(w.a.comp) || sel.includes(w.b.comp)) wires++;
+        const msg = `Remove ${sel.length} component(s)` + (wires ? ` and ${wires} connected wire(s)` : '') + '?';
+        if (!confirmOr(msg)) return;
+        for (const id of sel) schematic.remove(id);
         selectionRef.current = new Set();
         onEdit();
       } else if (e.key === 'r' || e.key === 'R') {
@@ -282,6 +330,15 @@ export function SchematicCanvas({ schematic, machine, running, speed, onEdit, ap
       battery: { volts: 9 },
     };
     try {
+      if (type === 'board') {
+        // exactly one board per document: drop re-places it, or adds it back
+        // after a delete
+        const existing = schematic.boardComponent();
+        if (existing) schematic.move(existing.id, snapped.x, snapped.y);
+        else schematic.addBoard(boardId, snapped.x, snapped.y);
+        onEdit();
+        return;
+      }
       const params = { ...(defaults[type] ?? {}) };
       if (type === 'led') {
         // LED ships with a series resistor baked into the symbol params;
@@ -306,6 +363,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, onEdit, ap
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onDoubleClick={onDoubleClick}
       />
     </div>
   );
