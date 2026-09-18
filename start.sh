@@ -6,6 +6,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 MODE="${1:-dev}"
+
+# No dependency on pnpm/npm being on PATH - run the local toolchain directly.
+if [[ ! -x node_modules/.bin/vite ]]; then
+  echo "node_modules missing - run: pnpm install (or npm install)" >&2
+  exit 1
+fi
 mkdir -p .run
 PORT=5188
 LOG=".run/$MODE.log"
@@ -22,10 +28,10 @@ fi
 if [[ "$MODE" == prod ]]; then
   PORT=8090
   echo "building..."
-  pnpm run build >/dev/null
+  node_modules/.bin/tsc -p tsconfig.json --noEmit && node_modules/.bin/vite build >/dev/null || { echo "build failed" >&2; exit 1; }
   setsid bash -c "echo \$\$ > '$PIDFILE'; exec python3 -m http.server $PORT --bind 127.0.0.1 --directory dist" >"$LOG" 2>&1 &
 else
-  setsid bash -c "echo \$\$ > '$PIDFILE'; exec pnpm run dev" >"$LOG" 2>&1 &
+  setsid bash -c "echo \$\$ > '$PIDFILE'; exec '$PWD/node_modules/.bin/vite'" >"$LOG" 2>&1 &
 fi
 sleep 0.3
 PID="$(cat "$PIDFILE" 2>/dev/null || true)"
