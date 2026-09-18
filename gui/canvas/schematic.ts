@@ -557,17 +557,23 @@ export function findCrossings(routes: Map<string, Pt[]>): Crossing[] {
           out.push({ x: p.x, y: p.y, w1: ids[i], w2: ids[j], endpoint: false });
         }
       }
-      // T-junctions: endpoint of one lying strictly inside the other
+      // T-junctions: endpoint of one lying strictly inside the other.
+      // A vertex whose own path runs along the touched segment merely overlaps
+      // it (two wires sharing a row); that is one drawn line, not a junction.
       const tTouch = (path: Pt[], other: Pt[], pathId: string, otherId: string): void => {
         for (let k = 0; k < path.length; k++) {
           const e = path[k];
           if (nearVertex(other, e)) continue;
+          const adjH =
+            (k > 0 && path[k - 1].y === e.y) || (k + 1 < path.length && path[k + 1].y === e.y);
+          const adjV =
+            (k > 0 && path[k - 1].x === e.x) || (k + 1 < path.length && path[k + 1].x === e.x);
           for (let m = 0; m + 1 < other.length; m++) {
             const r = other[m];
             const t = other[m + 1];
-            if (r.x === t.x && e.x === r.x && Math.min(r.y, t.y) < e.y && e.y < Math.max(r.y, t.y))
+            if (!adjV && r.x === t.x && e.x === r.x && Math.min(r.y, t.y) < e.y && e.y < Math.max(r.y, t.y))
               out.push({ x: e.x, y: e.y, w1: otherId, w2: pathId, endpoint: true });
-            if (r.y === t.y && e.y === r.y && Math.min(r.x, t.x) < e.x && e.x < Math.max(r.x, t.x))
+            if (!adjH && r.y === t.y && e.y === r.y && Math.min(r.x, t.x) < e.x && e.x < Math.max(r.x, t.x))
               out.push({ x: e.x, y: e.y, w1: otherId, w2: pathId, endpoint: true });
           }
         }

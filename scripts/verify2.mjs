@@ -291,6 +291,9 @@ await cdp.eval(`document.querySelector('.btn-stop')?.click(); true`);
 // events always land inside the window
 const view = await cdp.eval(`(() => {
   document.querySelector('.btn-stop')?.click();
+  const s0 = window.__emu.schematic;
+  for (const id of [...s0.wires.keys()]) s0.remove(id);
+  for (const id of [...s0.components.keys()]) s0.remove(id);
   const rect = document.querySelector('.canvas-host canvas').getBoundingClientRect();
   const w = window.__emu.viewport.screenToWorld(rect.width / 2 - 60, rect.height / 2 + 120);
   return { cx: Math.round(w.x / 10) * 10, cy: Math.round(w.y / 10) * 10 };

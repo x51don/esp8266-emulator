@@ -27,8 +27,37 @@ const step = (p: Pt, d: Dir): Pt =>
   : { x: p.x + STUB, y: p.y };
 
 const horizontal = (d?: Dir): boolean => d === 'left' || d === 'right';
-const dedupe = (pts: Pt[]): Pt[] =>
-  pts.filter((p, i) => i === 0 || p.x !== pts[i - 1].x || p.y !== pts[i - 1].y);
+
+/** Drop duplicate points and 180-degree "run past and come back" vertices. */
+const dedupe = (pts: Pt[]): Pt[] => {
+  let out = pts.filter((p, i) => i === 0 || p.x !== pts[i - 1].x || p.y !== pts[i - 1].y);
+  for (;;) {
+    const next: Pt[] = [];
+    for (const p of out) {
+      next.push(p);
+      // a, m, q collinear with m beyond q (overshoot then reversal) -> drop m
+      while (next.length >= 3) {
+        const a = next[next.length - 3];
+        const m = next[next.length - 2];
+        const q = next[next.length - 1];
+        const horiz = a.y === m.y && m.y === q.y;
+        const vert = a.x === m.x && m.x === q.x;
+        const back =
+          (horiz && (m.x - a.x) * (q.x - m.x) < 0) || (vert && (m.y - a.y) * (q.y - m.y) < 0);
+        if (!back) break;
+        next.splice(next.length - 2, 1);
+        // collapsing the spike may weld the neighbours into one point
+        if (next.length >= 2) {
+          const u = next[next.length - 2];
+          const v = next[next.length - 1];
+          if (u.x === v.x && u.y === v.y) next.splice(next.length - 1, 1);
+        }
+      }
+    }
+    if (next.length === out.length) return next;
+    out = next;
+  }
+};
 
 /** True when the orthogonal segment passes strictly through the rect. */
 export function segmentHitsRect(p: Pt, q: Pt, r: Rect): boolean {
@@ -237,29 +266,33 @@ function astarRoute(
   const goal = gy(b.y) * W + gx(b.x);
   if (!inGrid(gx(a.x), gy(a.y)) || !inGrid(gx(b.x), gy(b.y))) return null;
   // punch the pin stubs: the wire physically leaves the pin that way, so the
-  // stub cell is always passable even when it sits on a body edge
+  // stub line is always passable even when it sits on a body edge. One cell
+  // is not enough for big bodies: their padded blocked wall can be thicker
+  // than a cell, so keep punching outward until the corridor escapes it.
   const punch = (from: number, d: number): number => {
-    const p = node(from);
     const n = DIRS[d];
-    const nx = gx(p.x + n[0] * cell); const ny = gy(p.y + n[1] * cell);
-    if (!inGrid(nx, ny)) return from;
-    blocked[ny * W + nx] = 0;
-    return ny * W + nx;
+    let cur = from;
+    for (let k = 0; k < 8; k++) {
+      const p = node(cur);
+      const nx = gx(p.x + n[0] * cell);
+      const ny = gy(p.y + n[1] * cell);
+      if (!inGrid(nx, ny)) return cur;
+      const idx = ny * W + nx;
+      const wasFree = blocked[idx] === 0;
+      blocked[idx] = 0;
+      cur = idx;
+      if (wasFree) break;
+    }
+    return cur;
   };
   const punchBack = (to: number, d: number): number => {
-    // cell on the +d side of `to`; approaching it means moving in -d
-    const p = node(to);
-    const n = DIRS[d];
-    const nx = gx(p.x + n[0] * cell); const ny = gy(p.y + n[1] * cell);
-    if (!inGrid(nx, ny)) return to;
-    blocked[ny * W + nx] = 0;
-    return ny * W + nx;
+    // cells on the +d side of `to`; approaching them means moving in -d
+    return punch(to, d);
   };
   let first = start;
   if (da !== undefined) first = punch(start, dirIdx(da));
   let lastBeforeGoal = goal;
-  if (db !== undefined) lastBeforeGoal = punch(goal, (dirIdx(db) + 2) % 4);
-  // (the cell the wire must come from is the one on the +db side of the pin)
+  // the wire must arrive at b from the +db side of the pin
   if (db !== undefined) lastBeforeGoal = punchBack(goal, dirIdx(db));
   blocked[start] = 0;
   blocked[goal] = 0;
@@ -321,7 +354,8 @@ function astarRoute(
       const ni = ny * W + nx;
       if (blocked[ni]) continue;
       if (cur === start && first !== start && d !== dirIdx(da)) continue;
-      if (cur === lastBeforeGoal && goal !== lastBeforeGoal && d !== (dirIdx(db) + 2) % 4) continue;
+      // must enter b along the -db direction (DIRS order is R,L,D,U: flip = xor 1)
+      if (cur === lastBeforeGoal && goal !== lastBeforeGoal && d !== (dirIdx(db) ^ 1)) continue;
       const g =
         cost[cur] + 1 + pen[ni] +
         (dir[cur] !== -1 && dir[cur] !== d ? BEND : 0);
@@ -441,11 +475,9 @@ export function routeWiresSequential(inputs: WireRouteInput[]): Pt[][] {
     const obs = (w.obstacles ?? []).concat(prior.filter((r) => !near(r, w.a) && !near(r, w.b)));
     let path = routeWire(w.a, w.b, w.da, w.db, obs);
     const bodies = w.bodies ?? [];
-    const through = pathThroughRects(
-      path, bodies,
-      path.length > 2 && w.da !== undefined,
-      path.length > 2 && w.db !== undefined,
-    );
+    // strict: `bodies` never contains the wire's own components, so even the
+    // pin stubs must not pierce them; stub exemptions here just hide pierces
+    const through = pathThroughRects(path, bodies, false, false);
     if (bodies.length && through.length > 0) {
       // no clean candidate existed: guarantee body-free via the grid
       const g = astarRoute(w.a, w.b, w.da, w.db, bodies, prior);

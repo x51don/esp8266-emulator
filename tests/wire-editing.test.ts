@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { Netlist } from '../peripherals/netlist';
 import { GpioBus } from '../peripherals/gpio';
-import { footprintFor, manualPath, Schematic } from '../gui/canvas/schematic';
+import { findCrossings, footprintFor, manualPath, Schematic } from '../gui/canvas/schematic';
+import { pathThroughRects, routeWiresSequential } from '../gui/canvas/routes';
 import type { Rect } from '../gui/canvas/routes';
+import type { Pt } from '../gui/canvas/viewport';
 
 // Round 4: manual wire waypoints, crossing detection and the capacitor part.
 
@@ -180,5 +182,77 @@ describe('horizontal flip', () => {
     const path = s.wireRoutes().get(w.id)!;
     expect(path[0]).toEqual({ x: 100, y: 100 }); // mirrored p2 sits at body's left
     expect(path[0].x < 120).toBe(true);
+  });
+});
+
+describe('route hygiene', () => {
+  it('paths never reverse back on themselves', () => {
+    // preset-like chain: two pins on one row with a body between them
+    const s = new Schematic();
+    const b = s.addBoard('wemos-d1-mini', 300, 100);
+    const r = s.add('resistor', 120, 180, { resistance: 220 });
+    const led = s.add('led', 20, 180, {});
+    const ws = [
+      s.wire({ comp: led.id, pin: 'k' }, { comp: r.id, pin: 'p1' }),
+      s.wire({ comp: r.id, pin: 'p2' }, { comp: b.id, pin: 'D4' }),
+      s.wire({ comp: led.id, pin: 'a' }, { comp: b.id, pin: 'GND' }),
+    ];
+    for (const w of ws) {
+      const p = s.wireRoutes().get(w.id)!;
+      for (let i = 1; i < p.length - 1; i++) {
+        const a = p[i - 1];
+        const m = p[i];
+        const q = p[i + 1];
+        const horiz = (u: Pt, v: Pt): boolean => u.y === v.y;
+        const vert = (u: Pt, v: Pt): boolean => u.x === v.x;
+        // three consecutive points on one axis moving out and back = reversal
+        const collinear = (horiz(a, m) && horiz(m, q)) || (vert(a, m) && vert(m, q));
+        const reverses =
+          (horiz(a, q) && (m.x - a.x) * (q.x - m.x) < 0) ||
+          (vert(a, q) && (m.y - a.y) * (q.y - m.y) < 0);
+        expect(collinear && reverses).toBe(false);
+      }
+    }
+  });
+
+  it('collinear overlapping wires are not crossings', () => {
+    const s = new Schematic();
+    const r1 = s.add('resistor', 100, 100, { resistance: 1 });
+    const r2 = s.add('resistor', 300, 100, { resistance: 1 });
+    const r3 = s.add('resistor', 160, 140, { resistance: 1 });
+    const r4 = s.add('resistor', 360, 140, { resistance: 1 });
+    const wa = s.wire({ comp: r1.id, pin: 'p2' }, { comp: r2.id, pin: 'p1' });
+    const wb = s.wire({ comp: r3.id, pin: 'p2' }, { comp: r4.id, pin: 'p1' });
+    s.setWirePath(wa.id, [{ x: 200, y: 100 }, { x: 200, y: 140 }]);
+    s.setWirePath(wb.id, [{ x: 200, y: 130 }, { x: 200, y: 200 }, { x: 240, y: 200 }]);
+    // wa ends horizontal at y=100..; both share vertical x=200 runs overlapping
+    const routes = new Map([
+      [wa.id, [{ x: 120, y: 100 }, { x: 200, y: 100 }, { x: 200, y: 140 }, { x: 300, y: 140 }]],
+      [wb.id, [{ x: 180, y: 80 }, { x: 200, y: 80 }, { x: 200, y: 120 }, { x: 380, y: 120 }]],
+    ]);
+    void wa; void wb;
+    const xs = findCrossings(routes).filter(
+      (c) => !(c.x === 200 && c.y >= 80 && c.y <= 140),
+    );
+    // the collinear overlap on x=200 (y 100..120) must NOT produce crossings
+    const overlap = findCrossings(routes).filter((c) => c.x === 200 && c.y > 80 && c.y < 140);
+    expect(overlap.length).toBe(0);
+    void xs;
+  });
+});
+
+describe('route hygiene 2', () => {
+  it('a wire never pierces an unrelated body, however its last stub is exempt', () => {
+    const resistorBody = { x: 2, y: 172, w: 16, h: 16 };
+    const outs = routeWiresSequential([
+      { a: { x: 20, y: 180 }, b: { x: -120, y: 180 }, da: 'right', db: 'left', obstacles: [] },
+      {
+        a: { x: -100, y: 180 }, b: { x: 320, y: 180 }, da: 'right', db: 'left',
+        obstacles: [resistorBody, { x: -121, y: 179, w: 142, h: 2 }],
+        bodies: [resistorBody],
+      },
+    ]);
+    const hits = pathThroughRects(outs[1], [resistorBody], false, false);
+    expect(hits.length).toBe(0);
   });
 });
