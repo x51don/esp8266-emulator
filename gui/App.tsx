@@ -3,7 +3,6 @@ import { Esp8266Machine, type SerialLine } from '../core/machine';
 import { listBoards } from '../core/boards';
 import { Schematic } from './canvas/schematic';
 import { routeWire } from './canvas/routes';
-import { pinDir } from './canvas/renderer';
 import { Palette } from './components/Palette';
 import { SchematicCanvas, confirmOr, type CanvasHandles } from './components/SchematicCanvas';
 import { CodeEditor } from './components/CodeEditor';
@@ -11,6 +10,20 @@ import { SerialMonitor } from './components/SerialMonitor';
 import { Toolbar } from './components/Toolbar';
 import { EXAMPLE_NAMES, EXAMPLE_SKETCHES, loadExample } from './examples';
 import { ProjectStore, type ProjectData } from './projects';
+
+export const NEW_SKETCH_TEMPLATE = `// New project - ESP8266 (Wemos D1 mini / NodeMCU).
+// Build a circuit, wire it to a pin and drive it from here.
+
+void setup() {
+  pinMode(D4, OUTPUT);
+  Serial.begin(115200);
+  Serial.println("hello esp8266");
+}
+
+void loop() {
+  delay(100);
+}
+`;
 
 const LS = {
   sketch: 'esp8266-emu.sketch',
@@ -107,6 +120,13 @@ export function App() {
     }),
     [sketch, schematic, boardId],
   );
+
+  const onNewProject = useCallback(() => {
+    if (!confirmOr('Start a new project? The current sketch and circuit are replaced.')) return;
+    const fresh = new Schematic();
+    fresh.addBoard(boardId, 160, 60);
+    applyDoc(fresh, NEW_SKETCH_TEMPLATE);
+  }, [applyDoc, boardId]);
 
   const onProjectSave = useCallback(() => {
     const name = window.prompt('Save project as:', 'project-1');
@@ -223,18 +243,7 @@ export function App() {
       setSketch,
       routeWire,
       /** Routed world polyline of a wire (same computation the canvas does). */
-      wirePath: (id: string) => {
-        const w = schematic.wires.get(id);
-        if (!w) return null;
-        const a = schematic.pinWorld(w.a);
-        const b = schematic.pinWorld(w.b);
-        return routeWire(
-          a, b,
-          pinDir(schematic, w.a, a),
-          pinDir(schematic, w.b, b),
-          schematic.wireObstacles(w.a, w.b),
-        );
-      },
+      wirePath: (id: string) => schematic.wireRoutes().get(id) ?? null,
       loadExample: (name: string) => {
         applyDoc(loadExample(name, boardId), EXAMPLE_SKETCHES[name]);
       },
@@ -264,6 +273,7 @@ export function App() {
         examples={EXAMPLE_NAMES}
         onExample={onExample}
         projects={projects}
+        onNewProject={onNewProject}
         onProjectLoad={onProjectLoad}
         onProjectSave={onProjectSave}
         onProjectDelete={onProjectDelete}

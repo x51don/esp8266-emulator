@@ -7,8 +7,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { Esp8266Machine } from '../../core/machine';
 import { nearestPin, polylineHit } from '../canvas/hit';
-import { renderScene, pinDir } from '../canvas/renderer';
-import { routeWire } from '../canvas/routes';
+import { renderScene } from '../canvas/renderer';
 import { snapToGrid } from '../canvas/grid';
 import type { Schematic, TerminalRef } from '../canvas/schematic';
 import { SimDriver } from '../sim/driver';
@@ -156,20 +155,8 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
   const findWire = (w: Pt): string | null => {
     const tol = 6 / vpRef.current.zoom;
     for (const wire of schematic.wires.values()) {
-      let pinA: Pt;
-      let pinB: Pt;
-      try {
-        pinA = schematic.pinWorld(wire.a);
-        pinB = schematic.pinWorld(wire.b);
-      } catch {
-        continue; // dangling reference mid-edit
-      }
-      const path = routeWire(
-        pinA, pinB,
-        pinDir(schematic, wire.a, pinA),
-        pinDir(schematic, wire.b, pinB),
-        schematic.wireObstacles(wire.a, wire.b),
-      );
+      const path = schematic.wireRoutes().get(wire.id);
+      if (!path) continue;
       if (polylineHit(path, w, tol)) return wire.id;
     }
     return null;

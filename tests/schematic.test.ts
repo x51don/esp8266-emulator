@@ -174,3 +174,27 @@ describe('wireObstacles', () => {
     expect(obs.some((r) => r.w < 44 && r.h < 44 && r.x > 200)).toBe(false);
   });
 });
+
+describe('wireRoutes', () => {
+  it('caches until the document changes', () => {
+    const sc = new Schematic();
+    sc.addBoard('wemos-d1-mini', 0, 0);
+    const r = sc.add('resistor', 300, 0, {});
+    sc.wire({ comp: 'board', pin: 'D4' }, { comp: r.id, pin: 'p1' });
+    const a = sc.wireRoutes();
+    expect(sc.wireRoutes()).toBe(a);
+    sc.move(r.id, 300, 40);
+    expect(sc.wireRoutes()).not.toBe(a);
+  });
+
+  it('skips dangling wires instead of throwing', () => {
+    const sc = new Schematic();
+    sc.addBoard('wemos-d1-mini', 0, 0);
+    const r = sc.add('resistor', 300, 0, {});
+    const good = sc.wire({ comp: 'board', pin: 'D4' }, { comp: r.id, pin: 'p1' });
+    sc.wires.set('ghost', { id: 'ghost', a: { comp: 'nope', pin: 'x' }, b: { comp: 'board', pin: 'GND' } });
+    const routes = sc.wireRoutes();
+    expect(routes.has(good.id)).toBe(true);
+    expect(routes.has('ghost')).toBe(false);
+  });
+});

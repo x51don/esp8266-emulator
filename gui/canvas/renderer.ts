@@ -5,9 +5,9 @@
  */
 
 import type { ResolveResult } from '../../peripherals/netlist';
-import { footprintFor, type PlacedComponent, type Schematic, type TerminalRef } from './schematic';
+import { footprintFor, type PlacedComponent, type Schematic, type TerminalRef, pinExitDir } from './schematic';
 import { gridStep, visibleCells } from './grid';
-import { routeWire, type Dir } from './routes';
+import { routeWire } from './routes';
 import type { Pt, Viewport } from './viewport';
 
 export interface DragWireState {
@@ -75,17 +75,7 @@ function pinMap(sc: Schematic): Map<string, Pt> {
 }
 
 /** Wire exit direction: away from the component body center. */
-export function pinDir(sc: Schematic, ref: TerminalRef, pos: Pt): Dir {
-  const c = sc.component(ref.comp);
-  if (!c) return 'right';
-  const b = sc.bodyRect(c);
-  const cx = b.x + b.w / 2;
-  const cy = b.y + b.h / 2;
-  const dx = pos.x - cx;
-  const dy = pos.y - cy;
-  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
-  return dy >= 0 ? 'down' : 'up';
-}
+
 
 // ---------- layers ----------
 
@@ -145,12 +135,7 @@ function drawWires(ctx: CanvasRenderingContext2D, s: RenderScene, pins: Map<stri
       ? C.wireFault
       : hot ? C.wireHot : C.wire;
     ctx.lineWidth = 2;
-    const path = routeWire(
-      a, b,
-      pinDir(s.schematic, w.a, a),
-      pinDir(s.schematic, w.b, b),
-      s.schematic.wireObstacles(w.a, w.b),
-    );
+    const path = s.schematic.wireRoutes().get(w.id) ?? [a, b];
     strokeWorld(ctx, s, path);
   }
 }
@@ -162,7 +147,7 @@ function drawDragWire(ctx: CanvasRenderingContext2D, s: RenderScene, pins: Map<s
   ctx.strokeStyle = C.select;
   ctx.setLineDash([6, 4]);
   ctx.lineWidth = 2;
-  strokeWorld(ctx, s, routeWire(a, s.dragWire.cursor, pinDir(s.schematic, s.dragWire.from, a)));
+  strokeWorld(ctx, s, routeWire(a, s.dragWire.cursor, pinExitDir(s.schematic, s.dragWire.from, a)));
   ctx.setLineDash([]);
 }
 

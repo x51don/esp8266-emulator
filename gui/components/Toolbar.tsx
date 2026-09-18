@@ -17,6 +17,7 @@ interface Props {
   onExample: (name: string) => void;
   projects: string[];
   onProjectLoad: (name: string) => void;
+  onNewProject: () => void;
   onProjectSave: () => void;
   onProjectDelete: (name: string) => void;
   onExport: () => void;
@@ -70,6 +71,9 @@ export function Toolbar(p: Props) {
           <option key={n} value={n}>{n}</option>
         ))}
       </select>
+      <button className="btn" onClick={p.onNewProject} title="empty sketch + empty board">
+        ✚ New
+      </button>
       <button className="btn" onClick={p.onProjectSave} title="save sketch + circuit under a name">
         💾 Save
       </button>

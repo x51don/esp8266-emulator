@@ -14,6 +14,7 @@
 
 import { getBoard } from '../../core/boards';
 import type { Netlist } from '../../peripherals/netlist';
+import { routeWiresSequential, type Dir, type WireRouteInput } from './routes';
 import type { Pt, Rect } from './viewport';
 
 export type Rot = 0 | 90 | 180 | 270;
@@ -115,6 +116,12 @@ export class Schematic {
   wires = new Map<string, WireSeg>();
   private seq: Record<string, number> = {};
   private wireSeq = 0;
+  private routesCache: Map<string, Pt[]> | null = null;
+
+  /** Invalidate the derived wire-route cache; every mutator calls this. */
+  private touch(): void {
+    this.routesCache = null;
+  }
 
   add(type: string, x: number, y: number, params: Record<string, unknown> = {}, id?: string): PlacedComponent {
     if (id === undefined) {
@@ -127,6 +134,7 @@ export class Schematic {
     const comp: PlacedComponent = { id, type, x, y, rot: 0, params };
     footprintFor(type, params); // validate type early
     this.components.set(id, comp);
+    this.touch();
     return comp;
   }
 
@@ -149,6 +157,7 @@ export class Schematic {
     for (const [wid, w] of this.wires) {
       if (w.a.comp === id || w.b.comp === id) this.wires.delete(wid);
     }
+    this.touch();
   }
 
   move(id: string, x: number, y: number): void {
@@ -157,11 +166,13 @@ export class Schematic {
       c.x = x;
       c.y = y;
     }
+    this.touch();
   }
 
   rotate(id: string): void {
     const c = this.components.get(id);
     if (c) c.rot = (((c.rot + 90) % 360) as Rot);
+    this.touch();
   }
 
   wire(a: TerminalRef, b: TerminalRef): WireSeg {
@@ -176,11 +187,13 @@ export class Schematic {
     const id = `w${++this.wireSeq}`;
     const seg: WireSeg = { id, a, b };
     this.wires.set(id, seg);
+    this.touch();
     return seg;
   }
 
   removeWire(id: string): void {
     this.wires.delete(id);
+    this.touch();
   }
 
   /** All pins of every component with their world positions (hit-testing). */
@@ -256,6 +269,39 @@ export class Schematic {
     return out;
   }
 
+  /**
+   * Routed polylines for every wire (id -> path), derived state cached until
+   * the document changes. Wires route in document order around bodies and
+   * each other, so the renderer, the hit-testing and automation all share
+   * exactly one truth about where a wire is drawn.
+   */
+  wireRoutes(): Map<string, Pt[]> {
+    if (this.routesCache) return this.routesCache;
+    const ids: string[] = [];
+    const inputs: WireRouteInput[] = [];
+    for (const w of this.wires.values()) {
+      let a: Pt;
+      let b: Pt;
+      try {
+        a = this.pinWorld(w.a);
+        b = this.pinWorld(w.b);
+      } catch {
+        continue; // dangling reference mid-edit: skip until fixed
+      }
+      ids.push(w.id);
+      inputs.push({
+        a, b,
+        da: pinExitDir(this, w.a, a),
+        db: pinExitDir(this, w.b, b),
+        obstacles: this.wireObstacles(w.a, w.b),
+      });
+    }
+    const map = new Map<string, Pt[]>();
+    routeWiresSequential(inputs).forEach((path, i) => map.set(ids[i], path));
+    this.routesCache = map;
+    return map;
+  }
+
   bounds(): Rect {
     let x0 = Infinity;
     let y0 = Infinity;
@@ -320,6 +366,17 @@ export class Schematic {
     s.wireSeq = doc.wireSeq ?? 0;
     return s;
   }
+}
+
+/** The direction a wire leaves a pin: straight away from the body centre. */
+export function pinExitDir(sc: Schematic, ref: TerminalRef, pos: Pt): Dir {
+  const c = sc.component(ref.comp);
+  if (!c) return 'right';
+  const b = sc.bodyRect(c);
+  const dx = pos.x - (b.x + b.w / 2);
+  const dy = pos.y - (b.y + b.h / 2);
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
+  return dy >= 0 ? 'down' : 'up';
 }
 
 function eq(a: TerminalRef, b: TerminalRef): boolean {

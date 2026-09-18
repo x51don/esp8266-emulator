@@ -208,3 +208,50 @@ export function routeWire(a: Pt, b: Pt, da?: Dir, db?: Dir, obstacles: Rect[] = 
   if (best) return dedupe(best);
   return dedupe(detour(base, obstacles, stubA, stubB));
 }
+
+// ---------- multi-wire routing ----------
+
+export interface WireRouteInput {
+  a: Pt;
+  b: Pt;
+  da?: Dir;
+  db?: Dir;
+  obstacles?: Rect[];
+}
+
+/** Thin outline rects of a polyline's segments (soft obstacles). */
+export function wireRects(path: Pt[], half = 1): Rect[] {
+  const out: Rect[] = [];
+  for (let i = 0; i + 1 < path.length; i++) {
+    const p = path[i];
+    const q = path[i + 1];
+    out.push({
+      x: Math.min(p.x, q.x) - half,
+      y: Math.min(p.y, q.y) - half,
+      w: Math.abs(q.x - p.x) + half * 2,
+      h: Math.abs(q.y - p.y) + half * 2,
+    });
+  }
+  return out;
+}
+
+/**
+ * Route a batch of wires in document order: every wire avoids the bodies and
+ * the already-routed paths of the earlier ones, so drawn wires stop lying on
+ * top of each other. Soft obstacles touching a terminal are dropped, letting
+ * wires fan out of a shared pin instead of being shoved away from their own
+ * stub neighbourhood.
+ */
+export function routeWiresSequential(inputs: WireRouteInput[]): Pt[][] {
+  const paths: Pt[][] = [];
+  const prior: Rect[] = [];
+  for (const w of inputs) {
+    const near = (r: Rect, p: Pt): boolean =>
+      p.x >= r.x - STUB && p.x <= r.x + r.w + STUB && p.y >= r.y - STUB && p.y <= r.y + r.h + STUB;
+    const obs = (w.obstacles ?? []).concat(prior.filter((r) => !near(r, w.a) && !near(r, w.b)));
+    const path = routeWire(w.a, w.b, w.da, w.db, obs);
+    paths.push(path);
+    prior.push(...wireRects(path));
+  }
+  return paths;
+}

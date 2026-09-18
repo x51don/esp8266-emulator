@@ -194,6 +194,20 @@ const chrome5 = await cdp.eval(`(() => {
 })()`);
 check('Toolbar has Save/Export/Import', chrome5.save && chrome5.exp && chrome5.imp);
 
+// ---- 5b: New project empties the canvas back to a bare board ----
+await cdp.eval(`window.__emu.loadExample('blink.ino'); true`);
+await sleep(400);
+await cdp.eval(`(() => { [...document.querySelectorAll('.toolbar .btn')].find(b => b.textContent.includes('New')).click(); return true; })()`);
+await sleep(400);
+const fresh = await cdp.eval(`(() => {
+  const s = window.__emu.schematic;
+  return { comps: s.components.size, wires: s.wires.size, board: !!s.boardComponent(),
+           sketch: localStorage.getItem('esp8266-emu.sketch') ?? '' };
+})()`);
+check('New project leaves a bare board + template sketch',
+  fresh.comps === 1 && fresh.wires === 0 && fresh.board && fresh.sketch.includes('hello esp8266'),
+  JSON.stringify(fresh));
+
 // ---- 6: project save -> list -> load -> delete round-trip ----
 const proj = await cdp.eval(`(async () => {
   window.prompt = () => 'e2e-proj';

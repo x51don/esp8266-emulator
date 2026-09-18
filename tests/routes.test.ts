@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { routeWire, segmentHitsRect, type Rect } from '../gui/canvas/routes';
+import { routeWire, routeWiresSequential, segmentHitsRect, type Rect } from '../gui/canvas/routes';
 
 describe('routeWire (orthogonal Manhattan routing)', () => {
   it('straight horizontal line stays two points', () => {
@@ -98,4 +98,54 @@ describe('obstacle-aware routing', () => {
     expect(middlesInside(path, board)).toBe(false);
   });
 });
+});
+
+describe('routeWiresSequential (mutual wire avoidance)', () => {
+  /** True when a middle segment of `b` has its midpoint inside a thin
+   *  outline rect of `a` - i.e. the two drawn wires visibly overlap. */
+  const overlaps = (a: { x: number; y: number }[], b: { x: number; y: number }[]): boolean => {
+    const thin = (p: { x: number; y: number }, q: { x: number; y: number }): Rect => ({
+      x: Math.min(p.x, q.x) - 1,
+      y: Math.min(p.y, q.y) - 1,
+      w: Math.abs(q.x - p.x) + 2,
+      h: Math.abs(q.y - p.y) + 2,
+    });
+    for (let i = 0; i + 1 < b.length; i++) {
+      const mx = (b[i].x + b[i + 1].x) / 2;
+      const my = (b[i].y + b[i + 1].y) / 2;
+      for (let j = 0; j + 1 < a.length; j++) {
+        const r = thin(a[j], a[j + 1]);
+        if (mx > r.x && mx < r.x + r.w && my > r.y && my < r.y + r.h) return true;
+      }
+    }
+    return false;
+  };
+
+  it('routes two crossing-Z wires onto separate buses', () => {
+    const paths = routeWiresSequential([
+      { a: { x: 0, y: 0 }, b: { x: 200, y: 60 }, da: 'right', db: 'left' },
+      { a: { x: 0, y: 20 }, b: { x: 200, y: 80 }, da: 'right', db: 'left' },
+    ]);
+    expect(paths[0].length).toBeGreaterThan(2);
+    expect(overlaps(paths[0], paths[1])).toBe(false);
+  });
+
+  it('does not fight itself: routes are stable when re-routed in order', () => {
+    const reqs = [
+      { a: { x: 0, y: 0 }, b: { x: 200, y: 60 }, da: 'right' as const, db: 'left' as const },
+      { a: { x: 0, y: 20 }, b: { x: 200, y: 80 }, da: 'right' as const, db: 'left' as const },
+    ];
+    const p1 = routeWiresSequential(reqs);
+    const p2 = routeWiresSequential(reqs);
+    expect(p2).toEqual(p1);
+  });
+
+  it('a wire sharing a pin still leaves along the shared stub', () => {
+    const paths = routeWiresSequential([
+      { a: { x: 0, y: 0 }, b: { x: 100, y: 0 }, da: 'right', db: 'left' },
+      { a: { x: 0, y: 0 }, b: { x: 100, y: 40 }, da: 'down', db: 'up' },
+    ]);
+    expect(paths[1][0]).toEqual({ x: 0, y: 0 });
+    expect(paths[1][1]).toEqual({ x: 0, y: 20 });
+  });
 });
