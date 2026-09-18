@@ -84,6 +84,55 @@ export function footprintFor(type: string, params: Record<string, unknown>): Foo
         pins: [{ name: '+', x: 0, y: 0 }, { name: '-', x: PIN_GAP, y: 0 }],
         body: { x: -6, y: -16, w: PIN_GAP + 12, h: 32 },
       };
+    case 'pot':
+      return {
+        pins: [{ name: 'p1', x: 0, y: 0 }, { name: 'w', x: 10, y: -20 }, { name: 'p2', x: 20, y: 0 }],
+        body: { x: -6, y: -8, w: 32, h: 16 },
+      };
+    case 'ldr':
+      return {
+        pins: [{ name: 'p1', x: 0, y: 0 }, { name: 'p2', x: PIN_GAP, y: 0 }],
+        body: { x: -4, y: -12, w: PIN_GAP + 8, h: 24 },
+      };
+    case 'dht':
+      return {
+        pins: [{ name: 'vcc', x: 0, y: 0 }, { name: 'data', x: 0, y: PIN_GAP }, { name: 'gnd', x: 0, y: 2 * PIN_GAP }],
+        body: { x: -14, y: -14, w: 84, h: 74 },
+      };
+    case 'servo':
+      return {
+        pins: [{ name: 'sig', x: 0, y: 0 }, { name: 'vcc', x: 0, y: PIN_GAP }, { name: 'gnd', x: 0, y: 2 * PIN_GAP }],
+        body: { x: -14, y: -14, w: 94, h: 74 },
+      };
+    case 'hcsr':
+      return {
+        pins: [
+          { name: 'vcc', x: 0, y: 0 }, { name: 'trig', x: 0, y: PIN_GAP },
+          { name: 'echo', x: 0, y: 2 * PIN_GAP }, { name: 'gnd', x: 0, y: 3 * PIN_GAP },
+        ],
+        body: { x: -14, y: -14, w: 94, h: 94 },
+      };
+    case 'relay':
+      return {
+        pins: [
+          { name: 'coilp', x: 0, y: 0 }, { name: 'coiln', x: 0, y: PIN_GAP },
+          { name: 'sw', x: 80, y: -20 }, { name: 'no', x: 100, y: 20 }, { name: 'nc', x: 100, y: 60 },
+        ],
+        body: { x: -14, y: -30, w: 134, h: 110 },
+      };
+    case 'oled':
+      return {
+        pins: [
+          { name: 'vcc', x: 0, y: 0 }, { name: 'gnd', x: 0, y: PIN_GAP },
+          { name: 'sda', x: 0, y: 2 * PIN_GAP }, { name: 'scl', x: 0, y: 3 * PIN_GAP },
+        ],
+        body: { x: -14, y: -14, w: 158, h: 118 },
+      };
+    case 'neopixel':
+      return {
+        pins: [{ name: 'din', x: 0, y: 0 }, { name: 'vcc', x: 0, y: PIN_GAP }, { name: 'gnd', x: 0, y: 2 * PIN_GAP }],
+        body: { x: -14, y: -14, w: 158, h: 62 },
+      };
     case 'board': {
       const board = getBoard(String(params.board ?? 'wemos-d1-mini'));
       const PITCH = 20;
@@ -173,6 +222,12 @@ export class Schematic {
     const c = this.components.get(id);
     if (c) c.rot = (((c.rot + 90) % 360) as Rot);
     this.touch();
+  }
+
+  /** Live-tune a parameter (pot ratio, sensor values). */
+  setParam(id: string, key: string, value: unknown): void {
+    const c = this.components.get(id);
+    if (c) c.params[key] = value;
   }
 
   wire(a: TerminalRef, b: TerminalRef): WireSeg {

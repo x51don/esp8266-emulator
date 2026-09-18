@@ -7,6 +7,7 @@
 import type { ResolveResult } from '../../peripherals/netlist';
 import { footprintFor, type PlacedComponent, type Schematic, type TerminalRef, pinExitDir } from './schematic';
 import { gridStep, visibleCells } from './grid';
+import { getBoard } from '../../core/boards';
 import { routeWire } from './routes';
 import type { Pt, Viewport } from './viewport';
 
@@ -14,6 +15,8 @@ export interface DragWireState {
   from: TerminalRef;
   cursor: Pt;
 }
+
+import type { Esp8266Machine } from '../../core/machine';
 
 export interface RenderScene {
   schematic: Schematic;
@@ -25,6 +28,7 @@ export interface RenderScene {
   selection: ReadonlySet<string>;
   hoverPin: TerminalRef | null;
   dragWire: DragWireState | null;
+  machine: Esp8266Machine | null; // state view (servos, panels, strips)
 }
 
 const C = {
@@ -164,6 +168,14 @@ function drawComponent(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedC
   else if (c.type === 'button') drawButton(ctx, s, c, body);
   else if (c.type === 'buzzer') drawBox(ctx, s, body, 'BUZZ', '#4a3a5a');
   else if (c.type === 'battery') drawBox(ctx, s, body, `${c.params.volts ?? 9}V`, '#405066');
+  else if (c.type === 'pot') drawPot(ctx, s, c, body);
+  else if (c.type === 'ldr') drawChip(ctx, s, c, body, 'LDR', `${Math.round(Number(c.params.lux ?? 300))} lx`, '#33301f');
+  else if (c.type === 'dht') drawChip(ctx, s, c, body, `DHT${String(c.params.model ?? 'DHT22').replace('DHT', '')}`, `${c.params.tempC ?? 22}\u00b0C  ${c.params.humPct ?? 50}%`, '#1c2836');
+  else if (c.type === 'hcsr') drawHcsr(ctx, s, c, body);
+  else if (c.type === 'servo') drawServo(ctx, s, c, body);
+  else if (c.type === 'relay') drawRelay(ctx, s, c, body);
+  else if (c.type === 'oled') drawOled(ctx, s, c, body);
+  else if (c.type === 'neopixel') drawNeopixel(ctx, s, c, body);
   else drawBox(ctx, s, body, c.type, C.body);
 
   if (s.selection.has(c.id)) {
@@ -187,6 +199,189 @@ function drawComponent(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedC
     ctx.arc(q.x, q.y, hovered ? 5 : 3.5, 0, Math.PI * 2);
     ctx.fill();
   }
+}
+
+// ---------- ESPHome-style parts ----------
+
+function boxScreen(s: RenderScene, body: { x: number; y: number; w: number; h: number }) {
+  const p0 = s.viewport.worldToScreen(body.x, body.y);
+  const z = s.viewport.zoom;
+  return { x: p0.x, y: p0.y, w: body.w * z, h: body.h * z, z };
+}
+
+/** GPIO number the net of comp.pin currently belongs to, or null. */
+function pinGpio(s: RenderScene, compId: string, pin: string): number | null {
+  if (!s.circuit) return null;
+  const net = s.circuit.netOf.get(netTerminal(s, `${compId}.${pin}`));
+  if (net === undefined) return null;
+  const board = s.schematic.boardComponent();
+  if (!board) return null;
+  const bd = getBoard(String(board.params.board ?? 'wemos-d1-mini'));
+  for (const p of footprintFor('board', board.params).pins) {
+    if (s.circuit.netOf.get(netTerminal(s, `${board.id}.${p.name}`)) !== net) continue;
+    const g = bd.gpioFor(p.name);
+    if (g !== null) return g;
+  }
+  return null;
+}
+
+function chipBox(
+  ctx: CanvasRenderingContext2D, s: RenderScene, body: { x: number; y: number; w: number; h: number },
+  fill: string,
+): ReturnType<typeof boxScreen> {
+  const b = boxScreen(s, body);
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = C.bodyEdge;
+  roundRect(ctx, b.x, b.y, b.w, b.h, 5);
+  ctx.fill();
+  ctx.stroke();
+  return b;
+}
+
+function chipText(
+  ctx: CanvasRenderingContext2D,
+  b: { x: number; y: number; w: number; h: number; z: number },
+  title: string, value: string, color = C.text,
+): void {
+  ctx.fillStyle = C.silk;
+  ctx.font = `${Math.max(8, 10 * b.z)}px ui-monospace, monospace`;
+  ctx.textAlign = 'center';
+  ctx.fillText(title, b.x + b.w / 2, b.y + 13 * b.z);
+  ctx.fillStyle = color;
+  ctx.font = `${Math.max(9, 11 * b.z)}px ui-monospace, monospace`;
+  ctx.fillText(value, b.x + b.w / 2, b.y + b.h / 2 + 7 * b.z);
+  ctx.textAlign = 'left';
+}
+
+function drawPot(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent, body: { x: number; y: number; w: number; h: number }): void {
+  const b = boxScreen(s, body);
+  ctx.fillStyle = '#2a2418';
+  ctx.strokeStyle = C.bodyEdge;
+  roundRect(ctx, b.x, b.y, b.w, b.h, 3);
+  ctx.fill();
+  ctx.stroke();
+  const ratio = Math.min(1, Math.max(0, Number(c.params.ratio ?? 0.5)));
+  const wx = b.x + ratio * b.w;
+  ctx.strokeStyle = C.text;
+  ctx.beginPath();
+  ctx.moveTo(wx, b.y - 6 * b.z);
+  ctx.lineTo(wx, b.y);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(wx, b.y + b.h + 5 * b.z, 3 * b.z, 0, Math.PI * 2);
+  ctx.fillStyle = C.wireHot;
+  ctx.fill();
+  ctx.fillStyle = C.silk;
+  ctx.textAlign = 'center';
+  ctx.font = `${Math.max(8, 10 * b.z)}px ui-monospace, monospace`;
+  ctx.fillText(`${Math.round(ratio * 100)}%`, b.x + b.w / 2, b.y - 10 * b.z);
+  ctx.textAlign = 'left';
+}
+
+function drawChip(
+  ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent,
+  body: { x: number; y: number; w: number; h: number }, title: string, value: string, fill: string,
+): void {
+  const b = chipBox(ctx, s, body, fill);
+  chipText(ctx, b, title, value);
+  void c;
+}
+
+function drawHcsr(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent, body: { x: number; y: number; w: number; h: number }): void {
+  const b = chipBox(ctx, s, body, '#20304a');
+  chipText(ctx, b, 'HC-SR04', `${c.params.cm ?? 20} cm`, '#9fd0ff');
+  // two ultrasonic transducers
+  ctx.strokeStyle = '#5b7ba6';
+  for (const fx of [0.32, 0.68]) {
+    ctx.beginPath();
+    ctx.arc(b.x + b.w * fx, b.y + b.h * 0.68, b.h * 0.13, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
+function drawServo(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent, body: { x: number; y: number; w: number; h: number }): void {
+  const b = chipBox(ctx, s, body, '#42304f');
+  const gpio = pinGpio(s, c.id, 'sig');
+  const deg = gpio !== null ? (s.machine?.servoAngles().get(gpio) ?? 90) : 90;
+  chipText(ctx, b, 'SG90 SERVO', `${Math.round(deg)}\u00b0`, '#e6d2ff');
+  const cx = b.x + b.w * 0.5;
+  const cy = b.y + b.h * 0.62;
+  const a = Math.PI - (deg / 180) * Math.PI; // 0\u00b0 left, 180\u00b0 right
+  ctx.strokeStyle = '#e6d2ff';
+  ctx.lineWidth = 2 * b.z;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + Math.cos(a) * b.w * 0.3, cy - Math.sin(a) * b.h * 0.3);
+  ctx.stroke();
+  ctx.lineWidth = 1;
+}
+
+function drawRelay(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent, body: { x: number; y: number; w: number; h: number }): void {
+  const b = chipBox(ctx, s, body, '#33272a');
+  const nv = (pin: string): number => {
+    if (!s.circuit) return 0;
+    const net = s.circuit.netOf.get(netTerminal(s, `${c.id}.${pin}`));
+    return net === undefined ? 0 : s.circuit.netVoltage.get(net) ?? 0;
+  };
+  const on = nv('coilp') > 2 && nv('coiln') < 1.65;
+  chipText(ctx, b, 'RELAY', on ? 'CLOSED' : 'open', on ? C.wireHot : C.text);
+  const swp = s.schematic.pinWorld({ comp: c.id, pin: 'sw' });
+  const otp = s.schematic.pinWorld({ comp: c.id, pin: on ? 'no' : 'nc' });
+  const sw = s.viewport.worldToScreen(swp.x, swp.y);
+  const out = s.viewport.worldToScreen(otp.x, otp.y);
+  ctx.strokeStyle = on ? C.wireHot : C.silk;
+  ctx.lineWidth = 2 * b.z;
+  ctx.beginPath();
+  ctx.moveTo(sw.x, sw.y);
+  ctx.lineTo(out.x, out.y);
+  ctx.stroke();
+  ctx.lineWidth = 1;
+}
+
+function drawOled(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent, body: { x: number; y: number; w: number; h: number }): void {
+  const b = chipBox(ctx, s, body, '#10151d');
+  const m = 10 * b.z;
+  const sx = b.x + m + 6 * b.z;
+  const sy = b.y + m;
+  const sw = b.w - 2 * m - 12 * b.z;
+  const sh = b.h - 2 * m;
+  ctx.fillStyle = '#04070b';
+  roundRect(ctx, sx, sy, sw, sh, 3);
+  ctx.fill();
+  ctx.strokeStyle = '#2c3a4d';
+  ctx.stroke();
+  const cells = s.machine?.oledFrames().get(c.id)?.cells;
+  if (cells) {
+    ctx.fillStyle = '#6ef7a5';
+    ctx.font = `${Math.max(7, Math.min(10, 9 * b.z))}px ui-monospace, monospace`;
+    ctx.textBaseline = 'top';
+    const lh = sh / 8;
+    for (let i = 0; i < 8; i++) {
+      const row = cells[i].trimEnd();
+      if (row) ctx.fillText(row, sx + 3 * b.z, sy + 2 * b.z + i * lh);
+    }
+    ctx.textBaseline = 'alphabetic';
+  }
+  ctx.fillStyle = C.silk;
+  ctx.font = `${Math.max(8, 10 * b.z)}px ui-monospace, monospace`;
+  ctx.fillText('OLED 0.96\u2033 I2C', b.x + 2, b.y - 5 * b.z);
+}
+
+function drawNeopixel(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent, body: { x: number; y: number; w: number; h: number }): void {
+  const b = chipBox(ctx, s, body, '#1c232e');
+  const gpio = pinGpio(s, c.id, 'din');
+  const strip = gpio !== null ? s.machine?.strips().get(gpio) : undefined;
+  const n = Math.min(strip?.count ?? Number(c.params.count ?? 8), 16);
+  for (let i = 0; i < n; i++) {
+    const rgb = strip?.pixels[i] ?? 0;
+    ctx.fillStyle = rgb ? `#${rgb.toString(16).padStart(6, '0')}` : '#26303d';
+    ctx.beginPath();
+    ctx.arc(b.x + ((i + 0.5) * b.w) / n, b.y + b.h * 0.55, Math.min(5 * b.z, b.w / n / 2.4), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = C.silk;
+  ctx.font = `${Math.max(8, 10 * b.z)}px ui-monospace, monospace`;
+  ctx.fillText(`NEOPIXEL x${strip?.count ?? c.params.count ?? 8}`, b.x + 2, b.y - 5 * b.z);
 }
 
 function drawBoard(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent): void {

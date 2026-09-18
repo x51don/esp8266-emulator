@@ -1,16 +1,35 @@
 import { describe, expect, it } from 'vitest';
-import { EXAMPLE_NAMES, loadExample } from '../gui/examples';
+import { EXAMPLE_NAMES, EXAMPLE_SKETCHES, loadExample } from '../gui/examples';
+import { parse } from '../core/sketch/parser';
 import { Netlist } from '../peripherals/netlist';
 import { GpioBus } from '../peripherals/gpio';
 
 describe('example presets', () => {
-  it('lists the four examples', () => {
+  it('lists every example', () => {
     expect(EXAMPLE_NAMES).toEqual([
       'blink.ino',
       'pwm-fade.ino',
       'button.ino',
       'serial-hello.ino',
+      'pot-serial.ino',
+      'ldr-led.ino',
+      'dht-oled.ino',
+      'servo-pot.ino',
+      'neopixel-chase.ino',
+      'hcsr-serial.ino',
+      'relay-pump.ino',
     ]);
+  });
+
+  it('every example preset builds, parses and resolves fault-free', () => {
+    for (const name of EXAMPLE_NAMES) {
+      const sc = loadExample(name, 'wemos-d1-mini');
+      parse(EXAMPLE_SKETCHES[name]); // must compile
+      const nl = new Netlist(new GpioBus());
+      sc.syncNetlist(nl);
+      const faults = nl.resolve().faults;
+      expect(faults, name).toEqual([]);
+    }
   });
 
   it('blink builds a board + resistor + LED wired to D4 and GND', () => {

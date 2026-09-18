@@ -38,7 +38,10 @@ type Tool =
   | { kind: 'idle' }
   | { kind: 'pan'; lastX: number; lastY: number }
   | { kind: 'move'; ids: string[]; startWorld: Pt; startPos: Map<string, Pt> }
-  | { kind: 'wire'; from: TerminalRef; cursor: Pt };
+  | { kind: 'wire'; from: TerminalRef; cursor: Pt }
+  | { kind: 'tune'; id: string };
+
+const TUNABLE = new Set(['pot', 'ldr', 'dht', 'hcsr']);
 
 export function SchematicCanvas({ schematic, machine, running, speed, boardId, onEdit, api }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -116,6 +119,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
           tool.kind === 'wire'
             ? { from: tool.from, cursor: tool.cursor }
             : null,
+        machine: runningRef.current ? machine : null,
       });
       raf = requestAnimationFrame(frame);
     };
@@ -185,6 +189,11 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
     // running buttons: momentary press
     if (runningRef.current) {
       const id = findComponent(w);
+      if (id && TUNABLE.has(schematic.component(id)!.type)) {
+        toolRef.current = { kind: 'tune', id };
+        applyTune(id, w);
+        return;
+      }
       if (id && schematic.component(id)!.type === 'button') {
         machine.press(id, true);
         const release = (): void => {
@@ -231,6 +240,8 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
     } else if (tool.kind === 'wire') {
       tool.cursor = snapToGrid(w, 10);
       hoverPinRef.current = findPin(w);
+    } else if (tool.kind === 'tune') {
+      applyTune(tool.id, w);
     } else if (tool.kind === 'move') {
       const dx = w.x - tool.startWorld.x;
       const dy = w.y - tool.startWorld.y;
@@ -242,6 +253,24 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
     } else {
       hoverPinRef.current = findPin(w);
     }
+  };
+
+  /** Drag-to-value on sensor bodies while the machine runs. */
+  const applyTune = (id: string, w: Pt): void => {
+    const c = schematic.component(id);
+    if (!c) return;
+    const b = schematic.bodyRect(c);
+    const fx = Math.min(1, Math.max(0, (w.x - b.x) / b.w));
+    const fy = Math.min(1, Math.max(0, (w.y - b.y) / b.h));
+    if (c.type === 'pot') schematic.setParam(id, 'ratio', Math.round(fx * 100) / 100);
+    else if (c.type === 'ldr') schematic.setParam(id, 'lux', Math.round(Math.pow(10, 1 + 4 * fx)));
+    else if (c.type === 'hcsr') schematic.setParam(id, 'cm', Math.round(2 + 398 * fx));
+    else if (c.type === 'dht') {
+      schematic.setParam(id, 'tempC', Math.round(50 * fx * 2) / 2);
+      schematic.setParam(id, 'humPct', Math.round(100 - 90 * fy));
+    }
+    // push into the live netlist so sketches see the value right away
+    machine.netlist.addComponent(id, c.type, c.params);
   };
 
   const onPointerUp = (): void => {
@@ -256,7 +285,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
           /* duplicate wire: ignore the second attempt */
         }
       }
-    } else if (tool.kind === 'move') {
+    } else if (tool.kind === 'move' || tool.kind === 'tune') {
       onEdit();
     }
     toolRef.current = { kind: 'idle' };
@@ -315,6 +344,14 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
       button: {},
       buzzer: {},
       battery: { volts: 9 },
+      pot: { ratio: 0.5 },
+      ldr: { lux: 300 },
+      dht: { model: 'DHT22', tempC: 23.5, humPct: 61 },
+      servo: {},
+      relay: {},
+      oled: { addr: 0x3c },
+      neopixel: { count: 8 },
+      hcsr: { cm: 20 },
     };
     try {
       if (type === 'board') {

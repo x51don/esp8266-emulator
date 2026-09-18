@@ -243,6 +243,49 @@ check(
   JSON.stringify(proj),
 );
 
+// ---- 10: DHT + OLED example drive the panel ----
+await cdp.eval(`window.__emu.machine.stop(); window.__emu.loadExample('dht-oled.ino'); true`);
+await sleep(400);
+await cdp.eval(`document.querySelector('.btn-run').click(); true`);
+await sleep(1500);
+const oled = await cdp.eval(`(() => {
+  const f = [...window.__emu.machine.oledFrames().values()];
+  const rows = f.length ? f[0].cells.map(r => r.trimEnd()).filter(Boolean) : [];
+  const txt = window.__emu.machine.serial.map(l => l.text).join(' ');
+  return { rows, ser: txt.includes('T=23.5') && txt.includes('H=61') };
+})()`);
+check('DHT on serial + OLED panel text', oled.rows.some(r => r.includes('ESP8266 lab')) && oled.ser, JSON.stringify(oled).slice(0, 120));
+
+// ---- 11: NeoPixel strip lights while running ----
+await cdp.eval(`window.__emu.machine.stop(); window.__emu.loadExample('neopixel-chase.ino'); true`);
+await sleep(400);
+await cdp.eval(`document.querySelector('.btn-run').click(); true`);
+await sleep(900);
+const np = await cdp.eval(`(() => {
+  const st = window.__emu.machine.strips().get(13);
+  return { n: st ? st.count : 0, lit: st ? st.pixels.filter(p => p).length : 0 };
+})()`);
+check('NeoPixel strip on D7 lit', np.n === 8 && np.lit > 0, JSON.stringify(np));
+
+// ---- 12: potentiometer drives analogRead live ----
+await cdp.eval(`window.__emu.machine.stop(); window.__emu.loadExample('pot-serial.ino'); true`);
+await sleep(400);
+await cdp.eval(`document.querySelector('.btn-run').click(); true`);
+await sleep(700);
+const lastAdc = `(parseInt((window.__emu.machine.serial.map(l => l.text).join(' ').match(/adc = (\\d+)/g) || []).pop() || 'x').toString()`;
+const midAdc = await cdp.eval(`(() => { const m = window.__emu.machine.serial.map(l => l.text).join(' ').match(/adc = (\\d+)/g); return m ? parseInt(m[m.length - 1].split(' ')[2]) : -1; })()`);
+await cdp.eval(`(() => {
+  const c = [...window.__emu.schematic.components.values()].find(c => c.type === 'pot');
+  c.params.ratio = 0;
+  window.__emu.machine.netlist.addComponent(c.id, 'pot', c.params);
+  return true;
+})()`);
+await sleep(600);
+const lowAdc = await cdp.eval(`(() => { const m = window.__emu.machine.serial.map(l => l.text).join(' ').match(/adc = (\\d+)/g); return m ? parseInt(m[m.length - 1].split(' ')[2]) : -1; })()`);
+check('Pot wiper moves analogRead (0.5 -> ~511, 0 -> ~0)', midAdc > 400 && lowAdc >= 0 && lowAdc < 80, `mid=${midAdc} low=${lowAdc}`);
+void lastAdc;
+await cdp.eval(`window.__emu.machine.stop(); true`);
+
 // ---- visual: load the button preset for a screenshot ----
 await cdp.eval(`window.__emu.loadExample('button.ino'); true`);
 await sleep(700);
