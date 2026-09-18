@@ -162,3 +162,15 @@ describe('Schematic JSON', () => {
     expect(t.add('led', 0, 0).id).toBe('led-2');
   });
 });
+
+describe('wireObstacles', () => {
+  it('keeps big endpoint bodies (board) but drops small own bodies', () => {
+    const sc = new Schematic();
+    sc.addBoard('wemos-d1-mini', 0, 0);
+    const led = sc.add('led', 300, 0, {});
+    const obs = sc.wireObstacles({ comp: 'board', pin: 'D4' }, { comp: led.id, pin: 'a' });
+    // board body stays (the wire must leave around it), the LED's own tiny body is out
+    expect(obs.some((r) => r.w > 100)).toBe(true);
+    expect(obs.some((r) => r.w < 44 && r.h < 44 && r.x > 200)).toBe(false);
+  });
+});

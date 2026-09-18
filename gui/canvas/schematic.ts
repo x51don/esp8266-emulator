@@ -232,6 +232,30 @@ export class Schematic {
     return { x: x0, y: y0, w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
   }
 
+  /** Body rects of all components except the given ids (wire-routing obstacles). */
+  bodyRects(exclude: string[] = []): Rect[] {
+    const skip = new Set(exclude);
+    const out: Rect[] = [];
+    for (const c of this.components.values())
+      if (!skip.has(c.id)) out.push(this.bodyRect(c));
+    return out;
+  }
+
+  /**
+   * Routing obstacles for a wire between two terminals: every body except
+   * the endpoints' OWN small bodies. Big endpoint bodies (the board) stay -
+   * a wire leaving a board pin must still route around the board.
+   */
+  wireObstacles(a: TerminalRef, b: TerminalRef): Rect[] {
+    const out: Rect[] = [];
+    for (const c of this.components.values()) {
+      const rect = this.bodyRect(c);
+      if ((c.id === a.comp || c.id === b.comp) && rect.w <= 44 && rect.h <= 44) continue;
+      out.push(rect);
+    }
+    return out;
+  }
+
   bounds(): Rect {
     let x0 = Infinity;
     let y0 = Infinity;

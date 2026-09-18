@@ -46,3 +46,12 @@ export function nearestPin(pins: PinPoint[], p: Pt, radius: number): string | nu
   }
   return best;
 }
+
+/** True when p lies within tol of any segment of the polyline. */
+export function polylineHit(path: Pt[], p: Pt, tol: number): boolean {
+  if (path.length === 0) return false;
+  if (path.length === 1) return Math.hypot(p.x - path[0].x, p.y - path[0].y) <= tol;
+  for (let i = 0; i < path.length - 1; i++)
+    if (pointNearSegment(p, path[i], path[i + 1], tol)) return true;
+  return false;
+}

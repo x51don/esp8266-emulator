@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pointInRect, rectIntersects, pointNearSegment, nearestPin } from '../gui/canvas/hit';
+import { pointInRect, rectIntersects, pointNearSegment, nearestPin, polylineHit } from '../gui/canvas/hit';
 
 describe('pointInRect', () => {
   const r = { x: 10, y: 20, w: 100, h: 50 };
@@ -46,5 +46,16 @@ describe('nearestPin', () => {
   });
   it('ties resolve to the earlier pin (stable)', () => {
     expect(nearestPin(pins, { x: 20, y: 0 }, 25)).toBe('a');
+  });
+});
+
+describe('polylineHit', () => {
+  const path = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 60 }];
+  it('hits near any segment of the polyline', () => {
+    expect(polylineHit(path, { x: 50, y: 3 }, 5)).toBe(true);
+    expect(polylineHit(path, { x: 102, y: 30 }, 5)).toBe(true);
+    expect(polylineHit(path, { x: 50, y: 40 }, 5)).toBe(false);
+    expect(polylineHit([], { x: 0, y: 0 }, 5)).toBe(false);
+    expect(polylineHit([{ x: 0, y: 0 }], { x: 0, y: 0 }, 5)).toBe(true);
   });
 });

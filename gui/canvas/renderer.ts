@@ -75,7 +75,7 @@ function pinMap(sc: Schematic): Map<string, Pt> {
 }
 
 /** Wire exit direction: away from the component body center. */
-function pinDir(sc: Schematic, ref: TerminalRef, pos: Pt): Dir {
+export function pinDir(sc: Schematic, ref: TerminalRef, pos: Pt): Dir {
   const c = sc.component(ref.comp);
   if (!c) return 'right';
   const b = sc.bodyRect(c);
@@ -145,7 +145,12 @@ function drawWires(ctx: CanvasRenderingContext2D, s: RenderScene, pins: Map<stri
       ? C.wireFault
       : hot ? C.wireHot : C.wire;
     ctx.lineWidth = 2;
-    const path = routeWire(a, b, pinDir(s.schematic, w.a, a), pinDir(s.schematic, w.b, b));
+    const path = routeWire(
+      a, b,
+      pinDir(s.schematic, w.a, a),
+      pinDir(s.schematic, w.b, b),
+      s.schematic.wireObstacles(w.a, w.b),
+    );
     strokeWorld(ctx, s, path);
   }
 }
