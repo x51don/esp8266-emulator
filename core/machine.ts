@@ -73,7 +73,7 @@ interface LibObj {
   notFoundFn?: string;
   active?: HttpReq | null;
   /** HTTPClient request state */
-  url?: { ip: string; port: number; uri: string; args: [string, string][] } | null;
+  url?: { host: string; port: number; uri: string; args: [string, string][] } | null;
   timeoutMs?: number;
   outBody?: string;
   resp?: HttpResp | null;
@@ -132,6 +132,8 @@ export class Esp8266Machine implements LanHost {
   faultReason: string | null = null;
   /** ESP.restart() latched; consumed by advance() to reboot from setup(). */
   private restartRequested = false;
+  /** F7: names announced via MDNS.begin, released on dispose */
+  private mdnsNames = new Set<string>();
   /** F6: the emulated flash sector; survives run()/restart, not the GC. */
   private eeprom = new Uint8Array(4096).fill(0xff);
   /** bumps on every commit() - the GUI uses it to mark a project dirty */
@@ -157,6 +159,8 @@ export class Esp8266Machine implements LanHost {
   dispose(): void {
     this.halt();
     lan.unregister(this);
+    for (const name of this.mdnsNames) lan.releaseName(name, this.ip);
+    this.mdnsNames.clear();
   }
 
   constructor(opts: { board: string; ip?: string }) {
@@ -620,7 +624,7 @@ private httpCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
         args: [...url.args, ...(method === 'GET' ? [] : parseForm(body))],
         body,
       };
-      const target = lan.route(url.ip);
+      const target = lan.routeHost(url.host);
       // no route, or fetching our own machine (our loop is busy inside GET;
       // the emulator does not buffer self-connections) -> connection failed
       if (!target || (target as unknown) === this) {
@@ -684,7 +688,7 @@ private drainGen(gen: SketchGen): void {
 fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
   if (this.machinePhase !== 'running') return null;
   const parts = parseUrl(url);
-  if (!parts || parts.ip !== this.ip) return null;
+  if (!parts || lan.resolveHost(parts.host) !== this.ip) return null;
   const req: HttpReq = {
     method,
     uri: parts.uri,
@@ -1311,7 +1315,15 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
           }
 
           // ---- mDNS + OTA: accepted, not simulated (milestone 12) ----
-          case 'MDNS.begin': case 'MDNS.addService': case 'MDNS.setHostname':
+          case 'MDNS.begin': {
+            const name = typeof args[0] === 'string' ? args[0] : '';
+            if (name) {
+              lan.registerName(name, this.ip);
+              this.mdnsNames.add(name.toLowerCase());
+            }
+            return { value: 1 };
+          }
+          case 'MDNS.addService': case 'MDNS.setHostname':
             return { value: 1 };
           case 'ArduinoOTA.onStart': case 'ArduinoOTA.onEnd':
           case 'ArduinoOTA.onProgress': case 'ArduinoOTA.onError':

@@ -127,3 +127,10 @@ switch/case, `String += n`, `String == String`, indeksowanie Stringa
 
 Trwały sektor 4096 B przez `ESP.restart()`, maszyna + projekty (base64).
 Szczoly: `milestone_14_eeprom.md`.
+
+---
+
+## F7 - nazwy mDNS (z listy braków) - ZROBIONE
+
+`MDNS.begin(nazwa)` + resolver w `HTTPClient`/panelu (`pokoj.local`).
+Szczegóły: `milestone_15_mdns.md`.
