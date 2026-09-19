@@ -47,36 +47,84 @@ export function preprocess(
   const lines = src.split('\n');
   const kept: string[] = [];
 
+  // Conditional-compilation frames. active = this branch emits its lines;
+  // taken = some branch of this #if chain has fired (so #else/#elif sleep).
+  const stack: Array<{ active: boolean; taken: boolean }> = [];
+  const live = () => stack.every((f) => f.active);
+  const parentLive = (depth: number) => stack.slice(0, depth - 1).every((f) => f.active);
+
   for (let i = 0; i < lines.length; i++) {
     const lineNo = i + 1;
     const raw = lines[i];
     const dir = /^\s*#\s*(\w+)\s*(.*)$/.exec(raw);
     if (!dir) {
-      kept.push(raw);
+      kept.push(live() ? raw : '');
       continue;
     }
-    const [, kind, rest] = dir;
+    const [, kind, restRaw] = dir;
+    const rest = restRaw.trim();
+
     if (kind === 'include' || kind === 'pragma' || kind === 'using') {
       kept.push(''); // keep line numbering intact
-    } else if (kind === 'define') {
-      const m = /^(\w+)\s*\((.*)$/.exec(rest.trim());
-      if (m) {
-        throw new SketchError(
-          'function-like macros are not supported; use an inline function',
-          lineNo,
-        );
+    } else if (kind === 'ifdef' || kind === 'ifndef') {
+      const name = rest.split(/\s+/)[0];
+      const cond = kind === 'ifdef' ? name in defines : !(name in defines);
+      const active = live() && cond;
+      stack.push({ active, taken: active });
+      kept.push('');
+    } else if (kind === 'if') {
+      // only #if 0 / #if 1 - real sketches in this codebase stop there
+      if (!/^[01]$/.test(rest)) {
+        throw new SketchError('unsupported #if expression (only #if 0 and #if 1)', lineNo);
       }
-      const d = /^(\w+)\s+(.+)$/.exec(rest.trim());
-      if (d) defines[d[1]] = d[2].trim();
-      else if (/^\w+$/.test(rest.trim())) defines[rest.trim()] = '1';
+      const active = live() && rest === '1';
+      stack.push({ active, taken: active });
+      kept.push('');
+    } else if (kind === 'elif') {
+      if (!stack.length) throw new SketchError("#elif without #if", lineNo);
+      const m = /^defined\s*\(?\s*(\w+)\s*\)?$|^(\w+)$/.exec(rest);
+      if (!m) throw new SketchError('unsupported #elif expression (only defined(X))', lineNo);
+      const f = stack[stack.length - 1];
+      const cond = (m[1] ?? m[2]) in defines;
+      f.active = parentLive(stack.length) && !f.taken && cond;
+      if (f.active) f.taken = true;
+      kept.push('');
+    } else if (kind === 'else') {
+      if (!stack.length) throw new SketchError('#else without #if', lineNo);
+      const f = stack[stack.length - 1];
+      f.active = parentLive(stack.length) && !f.taken;
+      if (f.active) f.taken = true;
+      kept.push('');
+    } else if (kind === 'endif') {
+      if (!stack.length) throw new SketchError('#endif without #if', lineNo);
+      stack.pop();
+      kept.push('');
+    } else if (kind === 'define') {
+      if (live()) {
+        const m = /^(\w+)\s*\((.*)$/.exec(rest);
+        if (m) {
+          throw new SketchError(
+            'function-like macros are not supported; use an inline function',
+            lineNo,
+          );
+        }
+        // an empty define (FIXEDIP, ICACHE_RAM_ATTR) must expand to nothing;
+        // a trailing // comment is not part of the value ("// c" after "48")
+        const body = stripLineComment(rest);
+        const d = /^(\w+)\s+([\s\S]*)$/.exec(body);
+        if (d) defines[d[1]] = d[2].trim();
+        else if (/^\w+$/.test(body)) defines[body] = '';
+      }
       kept.push('');
     } else if (kind === 'undef') {
-      const name = rest.trim().split(/\s+/)[0];
-      delete defines[name];
+      if (live()) delete defines[rest.split(/\s+/)[0]];
       kept.push('');
     } else {
       throw new SketchError(`unsupported preprocessor directive '#${kind}'`, lineNo);
     }
+  }
+  if (stack.length) {
+    throw new SketchError('unterminated #ifdef (missing #endif)', 0);
   }
 
   let code = kept.join('\n');
@@ -89,7 +137,7 @@ export function preprocess(
     for (const name of names) {
       const re = new RegExp(`(?<![\\w.])${name}(?![\\w])`, 'g');
       if (re.test(code)) {
-        code = code.replace(re, defines[name]);
+        code = code.replace(re, () => defines[name]); // a $ in the value stays literal
         changed = true;
       }
     }
@@ -97,6 +145,20 @@ export function preprocess(
   }
 
   return { code, defines };
+}
+
+/** Remove a trailing // comment, respecting "strings" and 'chars'. */
+function stripLineComment(s: string): string {
+  let inStr: string | null = null;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (ch === '\\') i++;
+      else if (ch === inStr) inStr = null;
+    } else if (ch === '"' || ch === "'") inStr = ch;
+    else if (ch === '/' && s[i + 1] === '/') return s.slice(0, i).trimEnd();
+  }
+  return s;
 }
 
 export function tokenize(src: string, alreadyPreprocessed = false): Token[] {
