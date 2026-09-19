@@ -109,3 +109,14 @@ po kroku 5 - pełny scenariusz HA: /TARGET, /FOTO, fan-out, /RESTART.
 - `WiFi.waitForConnectResult()` = zwróć status po dokończeniu joina (1.5 s).
 - referencje: copy-out nie obsługuje referencji rekurencyjnie (wystarczy
   `int&`, `String&` jako kopie).
+
+---
+
+## Weryfikacja na prawdziwym szkicu (milestone 13) - ZROBIONE
+
+`examples/roleta_LoLin_v20.ino` + `tests/roleta-v20.test.ts`: szkic
+uruchamia się, serwuje /STATUS /TARGET /STOP /WAKE_UP, fan-out do 11
+peerów kończy się `-1` bez wieszania. Po drodze doszły: stałe
+rozmiary tablic, ICACHE_*, `void f(void)`, typedefy w parametrach,
+switch/case, `String += n`, `String == String`, indeksowanie Stringa
+(szczegóły w `milestone_13_roleta_v20.md`).

@@ -410,6 +410,7 @@ export class Interpreter {
         if (s.kind === 'Block') walk(s.body);
         if (s.kind === 'If') { walk([s.consequent]); if (s.alt) walk([s.alt]); }
         if (s.kind === 'For' || s.kind === 'While' || s.kind === 'DoWhile') walk([s.body]);
+        if (s.kind === 'Switch') for (const c of s.cases) walk(c.body);
       }
     };
     walk(fn.def.body.body);
@@ -520,6 +521,35 @@ export class Interpreter {
       }
 
       case 'Break': return { type: 'break' };
+
+      case 'Switch': {
+        const d = yield* this.eval(stmt.disc, scope);
+        const same = (a: Val, b: Val) =>
+          a.k !== 'void' && a.k === b.k && a.k === 'n'
+            ? a.v === b.v
+            : a.k === 's' && b.k === 's' && a.v === b.v;
+        let start = -1;
+        let def = -1;
+        for (let i = 0; i < stmt.cases.length; i++) {
+          const c = stmt.cases[i];
+          if (c.test === null) {
+            if (def < 0) def = i;
+            continue;
+          }
+          const t = yield* this.eval(c.test, scope);
+          if (start < 0 && same(d, t)) start = i;
+        }
+        if (start < 0) start = def;
+        if (start < 0) return NORMAL;
+        for (let i = start; i < stmt.cases.length; i++) {
+          for (const s of stmt.cases[i].body) {
+            const c = yield* this.exec(s, scope);
+            if (c.type === 'break') return NORMAL; // break belongs to the switch
+            if (c.type !== 'normal') return c; // return/continue escape too
+          }
+        }
+        return NORMAL;
+      }
       case 'Continue': return { type: 'continue' };
 
       default:
@@ -627,6 +657,15 @@ export class Interpreter {
         if (e.op === '+' && (l.k === 's' || r.k === 's')) {
           return { k: 's', v: strOf(l) + strOf(r) };
         }
+        // Arduino compares Strings as text, numbers stringify into it
+        // (`argName(i) == name`, `server.method() == HTTP_GET` -> false)
+        if (
+          (e.op === '==' || e.op === '!=') &&
+          ((l.k === 's' && !l.v.startsWith('@')) || (r.k === 's' && !r.v.startsWith('@')))
+        ) {
+          const eq = strOf(l) === strOf(r);
+          return numVal((e.op === '==' ? eq : !eq) ? 1 : 0, true);
+        }
         return numVal(
           this.applyBinary(e.op, asNum(l, e.line), asNum(r, e.line), isIntVal(l) && isIntVal(r), e.line),
           this.resultIsInt(e.op, l, r),
@@ -670,6 +709,12 @@ export class Interpreter {
         const rhs = yield* this.eval(e.value, scope);
         if (rhs.k === 's' && e.op === '+=') {
           const merged = { k: 's' as const, v: strOf(cur) + rhs.v };
+          this.storeInto(e.target, merged, scope, e.line);
+          return merged;
+        }
+        // `message += curent_pos` - appending a number to a String
+        if (e.op === '+=' && cur.k === 's' && !cur.v.startsWith('@')) {
+          const merged = { k: 's' as const, v: cur.v + strOf(rhs) };
           this.storeInto(e.target, merged, scope, e.line);
           return merged;
         }
@@ -747,6 +792,11 @@ export class Interpreter {
 
       case 'Index': {
         const arr = yield* this.eval(e.obj, scope);
+        // String indexing: `v[0] == '-'` yields the character code, like Char
+        if (arr.k === 's' && !arr.v.startsWith('@')) {
+          const i = asInt(yield* this.eval(e.index, scope), e.line);
+          return numVal(i >= 0 && i < arr.v.length ? arr.v.charCodeAt(i) : 0, true);
+        }
         this.checkArray(arr, e.line);
         const idx = asInt(yield* this.eval(e.index, scope), e.line);
         if (idx < 0 || idx >= (arr as Extract<Val, { k: 'a' }>).v.length) {

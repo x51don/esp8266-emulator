@@ -40,6 +40,10 @@ const ID_PART = /[A-Za-z0-9_]/;
  * Expand object-like #defines and drop #include/#pragma lines.
  * Returns the rewritten code plus the define table (useful for hover/debug).
  */
+// ESP core declares these as attributes; in a sketch they only ever decorate
+// a declaration, so the preprocessor simply erases them.
+const ATTR_MACROS = /\b(ICACHE_RAM_ATTR|ICACHE_FLASH_ATTR|ICACHE_RODATA_ATTR|IRAM_ATTR|DRAM_ATTR|PROGMEM|NOINLINE)\b/g;
+
 export function preprocess(
   src: string,
 ): { code: string; defines: Record<string, string> } {
@@ -58,7 +62,7 @@ export function preprocess(
     const raw = lines[i];
     const dir = /^\s*#\s*(\w+)\s*(.*)$/.exec(raw);
     if (!dir) {
-      kept.push(live() ? raw : '');
+      kept.push(live() ? raw.replace(ATTR_MACROS, '') : '');
       continue;
     }
     const [, kind, restRaw] = dir;

@@ -56,12 +56,19 @@ export interface For {
   kind: 'For'; init: Stmt | null; cond: Expr | null; update: Expr | null; body: Stmt; line: number;
 }
 export interface While { kind: 'While'; test: Expr; body: Stmt; line: number }
+/** C switch: `cases[i].test === null` marks `default:`; fall-through kept */
+export interface Switch {
+  kind: 'Switch';
+  disc: Expr;
+  cases: { test: Expr | null; body: Stmt[] }[];
+  line: number;
+}
 export interface DoWhile { kind: 'DoWhile'; body: Stmt; test: Expr; line: number }
 export interface Return { kind: 'Return'; arg: Expr | null; line: number }
 export interface Break { kind: 'Break'; line: number }
 export interface Continue { kind: 'Continue'; line: number }
 
-export type Stmt = Block | ExprStmt | VarDecl | If | For | While | DoWhile | Return | Break | Continue;
+export type Stmt = Block | ExprStmt | VarDecl | If | For | While | DoWhile | Return | Break | Continue | Switch;
 
 export interface Program { kind: 'Program'; globals: (VarDecl | FuncDef)[] }
 
@@ -79,7 +86,6 @@ const TYPE_WORDS = new Set([
 
 const REJECTED_KW: Record<string, string> = {
   goto: 'goto is not supported',
-  switch: 'switch/case is not supported; use if/else',
   struct: 'struct is not supported; use plain variables or functions',
   class: 'class is not supported',
   new: 'dynamic allocation (new) is not supported',
@@ -164,6 +170,7 @@ class Parser {
   private looksLikeParamList(): boolean {
     const t = this.peek(1);
     if (t.type === 'punct' && t.value === ')') return true;
+    if (this.isKw('void', 1)) return true; // `void setup(void)` - C style
     if (t.type === 'punct' && (t.value === 'const' || t.value === '&')) return true;
     return t.type === 'ident' && TYPE_WORDS.has(t.value);
   }
@@ -202,6 +209,38 @@ class Parser {
     return words.join(' ');
   }
 
+  /** `switch` already eaten. */
+  private parseSwitch(line: number): Switch {
+    this.eatPunct('(');
+    const disc = this.parseAssign();
+    this.eatPunct(')');
+    this.eatPunct('{');
+    const cases: { test: Expr | null; body: Stmt[] }[] = [];
+    let cur: { test: Expr | null; body: Stmt[] } | null = null;
+    while (!this.isPunct('}')) {
+      if (this.isKw('case')) {
+        this.next();
+        const test = this.parseAssign();
+        this.eatPunct(':');
+        cur = { test, body: [] };
+        cases.push(cur);
+      } else if (this.isKw('default')) {
+        this.next();
+        this.eatPunct(':');
+        cur = { test: null, body: [] };
+        cases.push(cur);
+      } else {
+        if (!cur)
+          throw new SyntaxError(
+            `statements before the first 'case' of a switch (line ${this.peek().line})`,
+          );
+        cur.body.push(this.parseStmt());
+      }
+    }
+    this.eatPunct('}');
+    return { kind: 'Switch', disc, cases, line };
+  }
+
   private parseFuncDefRest(returnType: string, name: string, line: number): FuncDef {
     this.eatPunct('(');
     const params = this.parseParamList();
@@ -215,7 +254,7 @@ class Parser {
     const params: { name: string; type: string; byRef?: boolean }[] = [];
     if (!this.isPunct(')')) {
       do {
-        if (this.isKw('void') && this.isPunct(')', 1)) break;
+        if (this.isKw('void') && this.isPunct(')', 1)) { this.next(); break; }
         const ptypeWords: string[] = [];
         while (this.peek().type === 'ident' && TYPE_WORDS.has(this.peek().value)) {
           ptypeWords.push(this.next().value);
@@ -228,7 +267,13 @@ class Parser {
           else isPtr = true;
           this.next();
         }
-        const pname = this.next();
+        let pname = this.next();
+        // unknown typedefs (`ota_error_t error`) are not TYPE_WORDS: the word
+        // we took as the name was the type - the name is the next ident
+        if (pname.type === 'ident' && this.peek().type === 'ident') {
+          ptypeWords.push(pname.value);
+          pname = this.next();
+        }
         if (pname.type !== 'ident') {
           throw new SyntaxError(`expected parameter name (line ${pname.line})`);
         }
@@ -278,7 +323,13 @@ class Parser {
       let arraySize: number | null = null;
       if (this.isPunct('[')) {
         this.next();
-        if (this.peek().type === 'num') arraySize = this.next().num!;
+        // sizes may be #define arithmetic (`int t[_N + 1]`); the preprocessor
+        // has substituted the macros, so what remains must fold to a constant
+        if (!(this.peek().type === 'num' && this.isPunct(']', 1))) {
+          if (!this.isPunct(']')) arraySize = this.constInt(this.parseAssign());
+        } else {
+          arraySize = this.next().num!;
+        }
         this.eatPunct(']');
       }
       let init: Expr | null = null;
@@ -295,6 +346,34 @@ class Parser {
     }
     this.eatPunct(';');
     return { kind: 'VarDecl', type, decls, isConst, isStatic, line };
+  }
+
+  /** fold a constant integer expression (array sizes); throws otherwise */
+  private constInt(e: Expr): number {
+    if (e.kind === 'Num') return Math.trunc(e.v);
+    if (e.kind === 'Unary' && (e.op === '-' || e.op === '+')) {
+      const v = this.constInt(e.operand);
+      return e.op === '-' ? -v : v;
+    }
+    if (e.kind === 'Binary') {
+      const a = this.constInt(e.left);
+      const b = this.constInt(e.right);
+      switch (e.op) {
+        case '+': return a + b;
+        case '-': return a - b;
+        case '*': return a * b;
+        case '/': return Math.trunc(a / b);
+        case '%': return a % b;
+        case '<<': return a << b;
+        case '>>': return a >> b;
+        case '&': return a & b;
+        case '|': return a | b;
+        case '^': return a ^ b;
+      }
+    }
+    throw new SyntaxError(
+      `array size must be a constant expression (line ${e.line})`,
+    );
   }
 
   private declName(): Token {
@@ -349,6 +428,7 @@ class Parser {
       case 'do': return this.parseDoWhile();
       case 'return': return this.parseReturn();
       case 'break': this.next(); this.eatPunct(';'); return { kind: 'Break', line: t.line };
+      case 'switch': this.next(); return this.parseSwitch(t.line);
       case 'continue': this.next(); this.eatPunct(';'); return { kind: 'Continue', line: t.line };
       default: break;
     }
