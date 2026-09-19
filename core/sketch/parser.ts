@@ -71,6 +71,8 @@ const TYPE_WORDS = new Set([
   'void', 'bool', 'char', 'short', 'int', 'long', 'float', 'double',
   'unsigned', 'signed', 'byte', 'word', 'String', 'uint8_t', 'uint16_t',
   'uint32_t', 'int8_t', 'int16_t', 'int32_t', 'size_t',
+  // WiFi mock object types (P3.3) - declarations only, see machine.wifiCall
+  'WiFiClient', 'WiFiServer', 'WiFiUDP',
 ]);
 
 const REJECTED_KW: Record<string, string> = {

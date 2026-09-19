@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { routeWire, routeWiresSequential, segmentHitsRect, type Rect } from '../gui/canvas/routes';
+import { routeWire, routeWiresSequential, segmentHitsRect, type Rect, type WireRouteInput } from '../gui/canvas/routes';
 
 describe('routeWire (orthogonal Manhattan routing)', () => {
   it('straight horizontal line stays two points', () => {
@@ -202,5 +202,22 @@ describe('A* fallback (never pierces a body)', () => {
     for (let i = 1; i < second.length; i++) {
       for (const w of walls) expect(segmentHitsRect(second[i - 1], second[i], w)).toBe(false);
     }
+  });
+});
+
+describe('large-document routing (P1.2)', () => {
+  it('every path connects its terminals on a 120+ wire document', () => {
+    const inputs: WireRouteInput[] = [];
+    for (let i = 0; i < 130; i++) {
+      const a = { x: (i % 10) * 120, y: Math.floor(i / 10) * 120 };
+      const b = { x: 1500 - (i % 10) * 120, y: 1500 - Math.floor(i / 10) * 120 };
+      inputs.push({ a, b, obstacles: [], bodies: [] });
+    }
+    const paths = routeWiresSequential(inputs);
+    expect(paths.length).toBe(130);
+    paths.forEach((p, i) => {
+      expect(p[0]).toEqual(inputs[i].a);
+      expect(p[p.length - 1]).toEqual(inputs[i].b);
+    });
   });
 });

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { PIN_OUTPUT } from '../peripherals/gpio';
 import { Esp8266Machine } from '../core/machine';
 
 // The machine is the facade the GUI talks to: load sketch, run, advance
@@ -205,5 +206,159 @@ describe('Arduino API helpers', () => {
     m.load('void setup(){ Serial.printf("a\\nb\\n"); } void loop(){}');
     m.run();
     expect(m.serial.map((l) => l.text)).toEqual(['a', 'b']);
+  });
+});
+
+describe('GPIO16 / board pin D0 (P0.2)', () => {
+  it('digitalWrite(D0, HIGH) drives the bus', () => {
+    const m = machine();
+    m.load('void setup(){ pinMode(D0, OUTPUT); digitalWrite(D0, HIGH); } void loop(){ delay(10); }');
+    m.run();
+    m.advance(5);
+    expect(m.pinLevel(16)).toBe(1);
+  });
+
+  it('D0 goes LOW again when the sketch clears it', () => {
+    const m = machine();
+    m.load('int n = 0; void setup(){ pinMode(D0, OUTPUT); } void loop(){ n = n + 1; digitalWrite(D0, n < 5 ? HIGH : LOW); delay(1); }');
+    m.run();
+    m.advance(2);
+    expect(m.pinLevel(16)).toBe(1);
+    m.advance(10);
+    expect(m.pinLevel(16)).toBe(0);
+  });
+
+  it('register-file mirror stays consistent after D0 writes', () => {
+    const m = machine();
+    m.load('void setup(){ pinMode(D4, OUTPUT); digitalWrite(D4, HIGH); } void loop(){ delay(1); }');
+    m.run();
+    m.advance(5);
+    expect(m.pinLevel(2)).toBe(1); // bits 0..15 unaffected by the 17-bit path
+  });
+});
+
+describe('machine hygiene (P0.6)', () => {
+  it('reset() clears the register file, not just the bus', () => {
+    const m = machine();
+    m.load('void setup(){ pinMode(D4, OUTPUT); digitalWrite(D4, HIGH); } void loop(){ delay(1); }');
+    m.run();
+    m.advance(5);
+    expect(m.pinLevel(2)).toBe(1);
+    m.reset();
+    const regs = (m as unknown as { registers: { read(a: number): number } }).registers;
+    expect(regs.read(0x600003fc)).toBe(0); // GPIO_OUT
+  });
+
+  it('a stale printBuf does not bleed into the next run', () => {
+    const m = machine();
+    m.load('void setup(){ Serial.begin(115200); Serial.print("tail"); } void loop(){ delay(1); }');
+    m.run();
+    m.advance(5);
+    m.stop();
+    m.load('void setup(){ Serial.begin(115200); Serial.println("fresh"); } void loop(){ delay(1); }');
+    m.run();
+    m.advance(5);
+    expect(m.serial[0].text).toBe('fresh');
+  });
+
+  it('serialLog is capped and reports dropped lines', () => {
+    const m = machine();
+    m.load('void setup(){ Serial.begin(115200); } void loop(){ Serial.println("x"); delay(1); }');
+    m.run();
+    for (let i = 0; i < 400; i++) m.advance(16);
+    expect(m.serial.length).toBeLessThanOrEqual(5000);
+    const dropped = (m as unknown as { droppedLines: number }).droppedLines;
+    expect(typeof dropped).toBe('number');
+    expect(dropped).toBeGreaterThan(0);
+  });
+
+  it('onSerial/onCircuit return working unsubscribers', () => {
+    const m = machine();
+    let lines = 0;
+    let circuits = 0;
+    const offS = m.onSerial(() => lines++);
+    const offC = m.onCircuit(() => circuits++);
+    m.load('void setup(){ Serial.begin(115200); } void loop(){ Serial.println("x"); delay(1); }');
+    m.run();
+    m.advance(20);
+    const [l, c] = [lines, circuits];
+    expect(l).toBeGreaterThan(0);
+    offS();
+    offC();
+    m.advance(20);
+    expect(lines).toBe(l);
+    expect(circuits).toBe(c);
+  });
+});
+
+describe('resolve on change signal (P1.1)', () => {
+  const started = (sketch: string) => {
+    const m = machine();
+    m.load(sketch);
+    m.run();
+    const nl = m.netlist;
+    const orig = nl.resolve.bind(nl);
+    let calls = 0;
+    nl.resolve = () => {
+      calls++;
+      return orig();
+    };
+    m.advance(0); // initial solve lands on the first advance
+    expect(calls).toBe(1);
+    return { m, calls: () => calls };
+  };
+
+  it('idle advance() does not re-resolve the netlist', () => {
+    const { m, calls } = started('void setup(){} void loop(){ delay(10); }');
+    m.advance(16);
+    m.advance(16);
+    m.advance(16);
+    expect(calls()).toBe(1);
+  });
+
+  it('a bus change re-resolves once on the next advance', () => {
+    const { m, calls } = started('void setup(){} void loop(){ delay(10); }');
+    m.gpio.setMode(2, PIN_OUTPUT);
+    m.gpio.write(2, 1);
+    m.advance(0);
+    expect(calls()).toBe(2);
+    m.advance(0);
+    expect(calls()).toBe(2); // settled again
+  });
+
+  it('netlist topology changes re-resolve', () => {
+    const { m, calls } = started('void setup(){} void loop(){ delay(10); }');
+    m.netlist.addComponent('led-9', 'led', { forwardV: 2 });
+    m.advance(0);
+    expect(calls()).toBe(2);
+    m.netlist.removeComponent('led-9');
+    m.advance(0);
+    expect(calls()).toBe(3);
+  });
+
+  it('a switch toggle re-resolves but a redundant state write does not', () => {
+    const { m, calls } = started('void setup(){} void loop(){ delay(10); }');
+    m.netlist.addComponent('sw-1', 'switch', {});
+    m.advance(0); // consume the addComponent signal
+    const base = calls();
+    m.netlist.setSwitchState('sw-1', true);
+    m.advance(0);
+    expect(calls()).toBe(base + 1);
+    m.netlist.setSwitchState('sw-1', true); // same value: no signal
+    m.advance(0);
+    expect(calls()).toBe(base + 1);
+  });
+});
+
+describe('serial line ids (P1.4)', () => {
+  it('lines carry stable unique ids for React keys', () => {
+    const m = machine();
+    m.load('void setup(){ Serial.begin(115200); Serial.println("a"); Serial.println("b"); Serial.println("c"); } void loop(){ delay(1); }');
+    m.run();
+    m.advance(5);
+    const ids = m.serial.map((l) => l.id);
+    expect(ids.every((id) => typeof id === 'number')).toBe(true);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids[1]).toBeGreaterThan(ids[0]);
   });
 });

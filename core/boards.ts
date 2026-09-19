@@ -103,19 +103,18 @@ const NODEMCU_RAILS: Rail[] = [
   { name: 'D3',  gpio: 0,    row: 8,  side: 'left' },
   { name: 'D4',  gpio: 2,    row: 9,  side: 'left' },
   { name: '5V',  gpio: null, row: 10, side: 'left' },
-  // right
+  // right (silks match the real v3 header: A0, D9, D10, 3V3, GND, HSPI, NC, VU)
   { name: 'A0',  gpio: null, row: 0,  side: 'right' },
-  { name: 'D10', gpio: null, row: 1,  side: 'right' }, // HSPI SS, not a GPIO user pin here
-  { name: 'D11', gpio: null, row: 2,  side: 'right' }, // HSPI SIO2
-  { name: 'D12', gpio: null, row: 3,  side: 'right' }, // HSPI SIO3
-  { name: '3V3', gpio: null, row: 4,  side: 'right' },
-  { name: 'GND', gpio: null, row: 5,  side: 'right' },
-  { name: 'D8',  gpio: 15,   row: 6,  side: 'right' },
-  { name: 'D7',  gpio: 13,   row: 7,  side: 'right' },
-  { name: 'D6',  gpio: 12,   row: 8,  side: 'right' },
-  { name: 'D5',  gpio: 14,   row: 9,  side: 'right' },
-  { name: 'D9',  gpio: null, row: 10, side: 'right' }, // labelled but flash-internal
-  { name: 'D10', gpio: null, row: 11, side: 'right' },
+  { name: 'D9',  gpio: null, row: 1,  side: 'right' }, // flash-internal, not bonded out
+  { name: 'D10', gpio: null, row: 2,  side: 'right' }, // flash-internal, not bonded out
+  { name: '3V3', gpio: null, row: 3,  side: 'right' },
+  { name: 'GND', gpio: null, row: 4,  side: 'right' },
+  { name: 'D8',  gpio: 15,   row: 5,  side: 'right' },
+  { name: 'D7',  gpio: 13,   row: 6,  side: 'right' },
+  { name: 'D6',  gpio: 12,   row: 7,  side: 'right' },
+  { name: 'D5',  gpio: 14,   row: 8,  side: 'right' },
+  { name: 'NC',  gpio: null, row: 9,  side: 'right' },
+  { name: 'VU',  gpio: null, row: 10, side: 'right' },
 ];
 
 export const wemosD1Mini: Board = makeBoard('wemos-d1-mini', 'Wemos D1 mini', WEMOS_RAILS);

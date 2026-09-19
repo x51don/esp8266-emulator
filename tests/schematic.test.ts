@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getBoard } from '../core/boards';
 import { Schematic, footprintFor, rotatePoint } from '../gui/canvas/schematic';
 import { Netlist } from '../peripherals/netlist';
 import { GpioBus } from '../peripherals/gpio';
@@ -196,5 +197,142 @@ describe('wireRoutes', () => {
     const routes = sc.wireRoutes();
     expect(routes.has(good.id)).toBe(true);
     expect(routes.has('ghost')).toBe(false);
+  });
+});
+
+describe('Schematic JSON validation (P0.4)', () => {
+  const doc = (over: Record<string, unknown>) =>
+    JSON.stringify({ comps: [], wires: [], seq: {}, wireSeq: 0, ...over });
+
+  it('rejects an unknown component type with a clear error', () => {
+    const bad = doc({ comps: [{ id: 'x1', type: 'toaster', x: 0, y: 0, rot: 0, params: {} }] });
+    expect(() => Schematic.fromJSON(bad)).toThrow(/unknown component type/i);
+  });
+
+  it('rejects non-object and missing-field documents instead of TypeError later', () => {
+    expect(() => Schematic.fromJSON('{}')).toThrow(/invalid schematic document/i);
+    expect(() => Schematic.fromJSON('[]')).toThrow(/invalid schematic document/i);
+    expect(() => Schematic.fromJSON(doc({ comps: [{ id: 'a' }] }))).toThrow(/invalid schematic document/i);
+  });
+
+  it('rejects garbage coordinates, rot and wire endpoints', () => {
+    expect(() =>
+      Schematic.fromJSON(doc({ comps: [{ id: 'a', type: 'led', x: '5', y: 0, rot: 0, params: {} }] })),
+    ).toThrow(/invalid schematic document/i);
+    expect(() =>
+      Schematic.fromJSON(doc({ comps: [{ id: 'a', type: 'led', x: 0, y: 0, rot: 45, params: {} }] })),
+    ).toThrow(/invalid schematic document/i);
+    const led = [{ id: 'a', type: 'led', x: 0, y: 0, rot: 0, params: {} }];
+    expect(() =>
+      Schematic.fromJSON(doc({ comps: led, wires: [{ id: 'w1', a: { comp: 'a' }, b: { comp: 'a', pin: 'k' } }] })),
+    ).toThrow(/invalid schematic document/i);
+  });
+
+  it('a board component with an unknown board id is rejected', () => {
+    expect(() =>
+      Schematic.fromJSON(doc({ comps: [{ id: 'board', type: 'board', x: 0, y: 0, rot: 0, params: { board: 'rpi-9' } }] })),
+    ).toThrow(/unknown board/i);
+  });
+
+  it('accepts a hand-written but valid document', () => {
+    const ok = doc({
+      comps: [{ id: 'led-1', type: 'led', x: 10, y: 20, rot: 90, params: { forwardV: 2 } }],
+      wires: [{ id: 'w1', a: { comp: 'led-1', pin: 'a' }, b: { comp: 'led-1', pin: 'k' } }],
+    });
+    const s = Schematic.fromJSON(ok);
+    expect(s.components.size).toBe(1);
+    expect(s.wires.size).toBe(1);
+  });
+});
+
+describe('document mutation coherence (P0.5)', () => {
+  const wiredBoard = () => {
+    const s = new Schematic();
+    s.addBoard('wemos-d1-mini', 0, 0, 'board');
+    const led = s.add('led', 400, 0, { forwardV: 2 });
+    // D8 sits at row 2 on Wemos but row 6 on NodeMCU: the route endpoint must
+    // move when the model changes, or the route cache is stale.
+    const w = s.wire({ comp: 'board', pin: 'D8' }, { comp: led.id, pin: 'a' });
+    s.wireRoutes(); // populate the route cache
+    return { s, w };
+  };
+
+  it('setParam invalidates the route cache', () => {
+    const { s, w } = wiredBoard();
+    const before = JSON.stringify(s.wireRoutes().get(w.id));
+    s.setParam('board', 'board', 'nodemcu-v3');
+    const after = s.wireRoutes().get(w.id);
+    expect(JSON.stringify(after)).not.toBe(before);
+    expect(after?.[0].y).toBe(getBoard('nodemcu-v3').rails.find((r) => r.name === 'D8')!.row * 20);
+  });
+
+  it('setBoard swaps the model, touches the cache and validates the id', () => {
+    const { s } = wiredBoard();
+    const yBefore = s.pinWorld({ comp: 'board', pin: 'D8' }).y;
+    s.setBoard('nodemcu-v3');
+    expect(s.pinWorld({ comp: 'board', pin: 'D8' }).y).not.toBe(yBefore);
+    expect(() => s.setBoard('rpi-zero')).toThrow(/unknown board/i);
+  });
+});
+
+describe('cheap drag (P1.2)', () => {
+  it('routes stay frozen between beginDrag and endDrag', () => {
+    const s = new Schematic();
+    s.addBoard('wemos-d1-mini', 0, 0, 'board');
+    const led = s.add('led', 300, 0, { forwardV: 2 });
+    const w = s.wire({ comp: 'board', pin: 'D5' }, { comp: led.id, pin: 'a' });
+    const map0 = s.wireRoutes();
+    const arr0 = map0.get(w.id)!;
+
+    s.beginDrag();
+    s.move(led.id, 600, 300);
+    s.rotate(led.id);
+    const during = s.wireRoutes();
+    expect(during).toBe(map0); // same object: nothing was recomputed
+    expect(during.get(w.id)).toBe(arr0);
+
+    s.endDrag();
+    const after = s.wireRoutes();
+    expect(after).not.toBe(map0);
+    expect(after.get(w.id)).not.toBe(arr0);
+    // committed route ends at the NEW pin position
+    const pin = s.pinWorld({ comp: led.id, pin: 'a' });
+    const end = after.get(w.id)!.at(-1)!;
+    expect(Math.abs(end.x - pin.x) <= 1 && Math.abs(end.y - pin.y) <= 1).toBe(true);
+  });
+
+  it('endDrag without beginDrag still commits (touch semantics)', () => {
+    const s = new Schematic();
+    s.addBoard('wemos-d1-mini', 0, 0, 'board');
+    const led = s.add('led', 300, 0, {});
+    const w = s.wire({ comp: 'board', pin: 'D5' }, { comp: led.id, pin: 'a' });
+    const map0 = s.wireRoutes();
+    s.endDrag();
+    expect(s.wireRoutes()).not.toBe(map0); // behaves like a plain invalidation
+    void w;
+  });
+});
+
+describe('document version signal (P1.3)', () => {
+  it('bumps on every mutation, never on reads', () => {
+    const s = new Schematic();
+    const v0 = s.version;
+    s.addBoard('wemos-d1-mini', 0, 0, 'board');
+    expect(s.version).toBeGreaterThan(v0);
+    const v1 = s.version;
+    const led = s.add('led', 300, 0, {});
+    expect(s.version).toBeGreaterThan(v1);
+    const v2 = s.version;
+    const w = s.wire({ comp: 'board', pin: 'D5' }, { comp: led.id, pin: 'a' });
+    expect(s.version).toBeGreaterThan(v2);
+    s.move(led.id, 320, 20);
+    expect(s.version).toBeGreaterThan(v2);
+    const v3 = s.version;
+    s.wireRoutes();
+    s.wireCrossings();
+    s.component(led.id);
+    expect(s.version).toBe(v3); // reads do not dirty
+    s.endDrag();
+    void w;
   });
 });

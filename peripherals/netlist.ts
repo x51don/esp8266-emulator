@@ -61,6 +61,8 @@ export interface ResolveResult {
 }
 
 const PULLUP_R = 30_000;
+/** Output resistance of a UI "force" editor (P3.1). */
+const FORCE_R = 10_000;
 const VF_DEFAULT = 2;
 const ON_MA = 0.05;
 const BURN_MA = 50;
@@ -73,41 +75,119 @@ export class Netlist {
   private wires = new Map<string, Wire>();
   private switches = new Map<string, boolean>();
   private wireSeq = 0;
+  /** P3.4: voltage across each capacitor plate pair (p1 referenced to p2). */
+  private capV = new Map<string, number>();
+  /** Virtual parts (force editors) that survive clear() and re-attach. */
+  private pinned: Array<{ id: string; type: string; params: Record<string, unknown>; wireTo: string }> = [];
+  /** Monotonic topology/param mutation counter for cached circuit solves. */
+  version = 0;
 
   constructor(private readonly gpio: GpioBus) {}
 
   addComponent(id: string, type: string, params: Record<string, unknown> = {}): void {
     this.comps.set(id, { id, type, params });
     if (type === 'button') this.switches.set(id, false);
+    this.version++;
   }
 
   /** Drop every component, wire and switch (used on document re-sync). */
   clear(): void {
+    const had = this.comps.size || this.wires.size || this.switches.size;
     this.comps.clear();
     this.wires.clear();
     this.switches.clear();
+    if (had) this.version++;
+    this.reattachPinned();
+  }
+
+  /**
+   * P3.4: exponential RC relaxation of every capacitor toward the Thevenin
+   * equivalent of the network around its p1 plate, tau = R_th * C
+   * (ohms x microfarads = microseconds). dtUs is real virtual time.
+   */
+  advanceTime(dtUs: number): void {
+    if (dtUs <= 0) return;
+    for (const c of this.comps.values()) {
+      if (c.type !== 'cap') continue;
+      const uf = Number(c.params.uf ?? 100);
+      if (!(uf > 0) || !(dtUs > 0)) continue;
+      const plate = term(c.id, 'p1');
+      let g = 0;
+      let iv = 0;
+      for (const s of this.reachSources(plate)) {
+        // the cap's own plate source is what we are relaxing - not its target
+        if (s.at.startsWith(`${c.id}.`)) continue;
+        if (s.r <= 0 || s.r >= 1e11) continue; // ideal wire or no path
+        g += 1 / s.r;
+        iv += s.src.v / s.r;
+      }
+      if (g === 0) continue; // floating: the charge holds
+      const vTh = iv / g;
+      const tauUs = uf / g; // (1/R) * C  in  us
+      const v0 = this.capV.get(c.id) ?? 0;
+      const v1 = vTh + (v0 - vTh) * Math.E ** (-dtUs / tauUs);
+      if (Math.abs(v1 - v0) > 1e-9) {
+        this.capV.set(c.id, v1);
+        this.version++; // cached solves must see the moving plate
+      }
+    }
+  }
+
+  /** Discharge every capacitor (machine reset). */
+  resetCapacitors(): void {
+    if (this.capV.size) {
+      this.capV.clear();
+      this.version++;
+    }
+  }
+
+  /**
+   * Pin a virtual voltage source (type 'force') onto a terminal. It survives
+   * clear(), so document resyncs keep the bias in place. volts=null removes
+   * it. The source is weak (FORCE_R), so it never fights a real driver.
+   */
+  pinForce(id: string, volts: number | null, to: string): void {
+    this.pinned = this.pinned.filter((p) => p.id !== id);
+    if (volts !== null) this.pinned.push({ id, type: 'force', params: { v: volts }, wireTo: to });
+    this.comps.delete(id);
+    for (const [wid, w] of this.wires)
+      if (w.a.startsWith(`${id}.`) || w.b.startsWith(`${id}.`)) this.wires.delete(wid);
+    this.version++;
+    this.reattachPinned();
+  }
+
+  private reattachPinned(): void {
+    for (const p of this.pinned) {
+      this.comps.set(p.id, { id: p.id, type: p.type, params: p.params });
+      this.wires.set(`w${++this.wireSeq}`, { id: `w${this.wireSeq}`, a: `${p.id}.out`, b: p.wireTo });
+    }
+    if (this.pinned.length) this.version++;
   }
 
   removeComponent(id: string): void {
-    this.comps.delete(id);
+    const had = this.comps.delete(id);
     this.switches.delete(id);
     for (const [wid, w] of this.wires) {
       if (w.a.startsWith(`${id}.`) || w.b.startsWith(`${id}.`)) this.wires.delete(wid);
     }
+    if (had) this.version++;
   }
 
   addWire(a: string, b: string): string {
     const id = `w${++this.wireSeq}`;
     this.wires.set(id, { id, a, b });
+    this.version++;
     return id;
   }
 
   removeWire(id: string): void {
-    this.wires.delete(id);
+    if (this.wires.delete(id)) this.version++;
   }
 
   setSwitchState(compId: string, closed: boolean): void {
+    if (this.switches.get(compId) === closed) return; // electrical no-op
     this.switches.set(compId, closed);
+    this.version++;
   }
 
   isSwitchClosed(compId: string): boolean {
@@ -187,6 +267,22 @@ export class Netlist {
       if (gpio === null || gpio === undefined) return null;
       return pinSource(this.gpio, gpio);
     }
+    if (comp.type === 'cap') {
+      // P3.4: a charged capacitor acts as a voltage source on its p1 plate
+      // (p2 is the reference; keep it at GND in the schematic). rInternal 1
+      // models an uncharged cap as a short at t=0 and charges smoothly.
+      return pin === 'p1'
+        ? { v: this.capV.get(comp.id) ?? 0, rInternal: 1, strong: false, duty: 1 }
+        : null;
+    }
+    if (comp.type === 'force') {
+      // P3.1 analog force editor: a bench supply behind 10k - it biases the
+      // node but a real strong driver always wins the divider, so forcing a
+      // pin that something already drives never faults.
+      return pin === 'out'
+        ? { v: Number(comp.params.v ?? 0), rInternal: FORCE_R, strong: false, duty: 1 }
+        : null;
+    }
     if (comp.type === 'battery') {
       const v = Number(comp.params.volts ?? 9);
       return pin === '+' ? { v, rInternal: 0, strong: true, duty: 1 } : { v: 0, rInternal: 0, strong: true, duty: 1 };
@@ -198,7 +294,7 @@ export class Netlist {
    * All reachable ideal sources with their min path resistance (Dijkstra over
    * conductive links; LED/buzzer terminals are searched TO, never through).
    */
-  private reachSources(from: string): Array<{ src: Source; r: number }> {
+  private reachSources(from: string): Array<{ src: Source; r: number; at: string }> {
     const dist = new Map<string, number>();
     dist.set(from, 0);
     const open: Array<{ t: string; r: number }> = [{ t: from, r: 0 }];
@@ -216,10 +312,10 @@ export class Netlist {
         open.push({ t: to, r: nr });
       }
     }
-    const out: Array<{ src: Source; r: number }> = [];
+    const out: Array<{ src: Source; r: number; at: string }> = [];
     for (const [t, r] of dist) {
       const src = this.sourceAt(t);
-      if (src) out.push({ src, r: r + src.rInternal });
+      if (src) out.push({ src, r: r + src.rInternal, at: t });
     }
     return out;
   }
@@ -362,14 +458,20 @@ export class Netlist {
    * Null when the node floats.
    */
   analogVolts(t: string): number | null {
+    // Exact multi-source Thevenin: parallel conductance weighting. Sources
+    // behind huge resistances fade out naturally (r -> inf contributes 0),
+    // an ideal r=0 rail wins outright.
     const list = this.reachSources(t);
     if (!list.length) return null;
-    const hi = [...list].sort((a, b) => b.src.v - a.src.v || a.r - b.r)[0];
-    const lo = [...list].sort((a, b) => a.src.v - b.src.v || a.r - b.r)[0];
-    if (hi.src.v === lo.src.v) return hi.src.v;
-    const den = hi.r + lo.r;
-    if (den === 0) return hi.src.v;
-    return (lo.src.v * hi.r + hi.src.v * lo.r) / den;
+    const EPS = 1e-9;
+    let g = 0;
+    let iv = 0;
+    for (const s of list) {
+      const gg = 1 / Math.max(s.r, EPS);
+      g += gg;
+      iv += s.src.v * gg;
+    }
+    return g === 0 ? null : iv / g;
   }
 
   private pinsOf(c: ComponentDef): string[] {
@@ -382,6 +484,7 @@ export class Netlist {
       case 'pot': return ['p1', 'w', 'p2'];
       case 'ldr': return ['p1', 'p2'];
       case 'cap': return ['p1', 'p2']; // open at logic level (documented)
+      case 'force': return ['out']; // virtual bench supply (P3.1)
       case 'dht': return ['vcc', 'data', 'gnd'];
       case 'hcsr': return ['vcc', 'trig', 'echo', 'gnd'];
       case 'servo': return ['sig', 'vcc', 'gnd'];

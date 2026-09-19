@@ -89,4 +89,19 @@ describe('example presets', () => {
   it('unknown example throws', () => {
     expect(() => loadExample('nope.ino', 'wemos-d1-mini')).toThrow();
   });
+
+  // Guard for audit H2 (the hcsr preset once hardcoded 'hcsr-1'): a preset
+  // must never reference a component it did not just create, or the wire
+  // dangles silently (routes and netlist skip it without an error).
+  it('no preset leaves dangling wire endpoints', () => {
+    for (const name of EXAMPLE_NAMES) {
+      const sc = loadExample(name, 'wemos-d1-mini');
+      for (const w of sc.wires.values()) {
+        expect(sc.components.has(w.a.comp), `${name}: ${w.id}.a`).toBe(true);
+        expect(sc.components.has(w.b.comp), `${name}: ${w.id}.b`).toBe(true);
+      }
+      // every wire must route (dangling endpoints are skipped silently)
+      expect(sc.wireRoutes().size, name).toBe(sc.wires.size);
+    }
+  });
 });

@@ -44,6 +44,8 @@ export interface InterpreterEnv {
   constants: Record<string, number>;
   millis(): number;
   micros(): number;
+  /** WiFi object declaration (P3.3): name, class, constructor port. */
+  objectDecl?(name: string, type: string, port: number): void;
 }
 
 export class SketchRuntimeError extends Error {
@@ -164,6 +166,10 @@ interface FuncInstance {
 }
 
 const MAX_CALL_DEPTH = 120;
+/** Ceiling for a single non-suspending expression eval (see evalPure).
+ *  Legitimate pure expressions are tiny; this only ever trips on a loop
+ *  inside a declaration/array-index, which would otherwise freeze the tab. */
+const MAX_PURE_STEPS = 200_000;
 const INT_TYPE_WORDS = new Set([
   'bool', 'char', 'short', 'int', 'long', 'unsigned', 'byte', 'word',
   'uint8_t', 'uint16_t', 'uint32_t', 'int8_t', 'int16_t', 'int32_t', 'size_t',
@@ -216,7 +222,20 @@ export class Interpreter {
     }
   }
 
+  /** WiFi mock instances are opaque tokens; the machine tracks their state. */
+  private wifiToken(d: Declarator, g: VarDecl): Val | null {
+    if (g.type !== 'WiFiClient' && g.type !== 'WiFiServer' && g.type !== 'WiFiUDP')
+      return null;
+    let port = 80;
+    if (d.init && d.init.kind === 'Call' && d.init.callee === g.type && d.init.args[0]?.kind === 'Num')
+      port = (d.init.args[0] as { v: number }).v;
+    this.env.objectDecl?.(d.name, g.type, port);
+    return { k: 's', v: `@${g.type}:${port}` };
+  }
+
   private globalInit(d: Declarator, g: VarDecl): Val {
+    const tok = this.wifiToken(d, g);
+    if (tok) return tok;
     const isIntType = typeIsInt(g.type);
     if (d.init === null) {
       if (d.arraySize !== null) return this.makeArray(d.arraySize, isIntType);
@@ -452,6 +471,8 @@ export class Interpreter {
    * duplicate cells so variables never share storage. delay() is rejected.
    */
   private localInit(d: Declarator, g: VarDecl, scope: Scope): Val {
+    const tok = this.wifiToken(d, g);
+    if (tok) return tok;
     const isIntType = typeIsInt(g.type);
     if (d.arraySize !== null || (d.init && d.init.kind === 'ArrayLit')) {
       if (d.init && d.init.kind === 'ArrayLit') {
@@ -472,14 +493,25 @@ export class Interpreter {
     return dup(this.evalPure(d.init, scope));
   }
 
-  /** Evaluate an expression that must not suspend (declaration initializers). */
+  /** Evaluate an expression that must not suspend (declaration initializers
+   *  and array targets). These generators are spun synchronously, so the
+   *  machine's per-frame budget cannot interrupt them; the step cap is what
+   *  turns `while(true){}` inside `arr[f()] = 1` into a line-numbered error
+   *  instead of a browser freeze. */
   private evalPure(e: Expr, scope: Scope): Val {
     const g = this.eval(e, scope);
+    let steps = 0;
     let r = g.next();
     while (!r.done) {
       if (r.value.kind === 'delay') {
         throw new SketchRuntimeError(
           'delay()/host calls are not allowed inside a declaration', e.line,
+        );
+      }
+      if (++steps >= MAX_PURE_STEPS) {
+        g.return(numVal(0, true)); // close the generator before the error escapes
+        throw new SketchRuntimeError(
+          'this expression loops without delay() - exceeded the step budget', e.line,
         );
       }
       r = g.next(undefined); // tick: keep going
@@ -505,6 +537,9 @@ export class Interpreter {
         if (c !== undefined) return numVal(c, true);
         if (e.name === 'true') return numVal(1, true);
         if (e.name === 'false') return numVal(0, true);
+        // C++ function-to-pointer decay: a bare function name used as a
+        // value (attachInterrupt pin argument) passes its name through.
+        if (this.funcs.has(e.name)) return { k: 's', v: e.name };
         throw new SketchRuntimeError(`'${e.name}' was not declared in this scope`, e.line);
       }
 

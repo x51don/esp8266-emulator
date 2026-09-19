@@ -1,10 +1,13 @@
 /**
- * ESP8266 GPIO register file (GPIO0..GPIO15 block).
+ * ESP8266 GPIO register file.
  *
  * Models the write-1-to-set / write-1-to-clear register trio the real chip uses,
  * so sketches or register-level code drive virtual pins the same way they would
- * drive hardware. GPIO16 sits in a separate block on real silicon; the machine
- * handles that pin outside this file.
+ * drive hardware. GPIO16 lives in a separate (RTC) block on real silicon and
+ * never appears in the 16-bit GPIO_OUT/ENABLE *read* registers; the block keeps
+ * it as an internal 17th bit so the whole machine can mirror one logical state
+ * (`outState()`/`enableState()` include it, `read()` of the 16-bit registers
+ * does not). The machine consumes bit 16 through its change listeners.
  *
  * Addresses come from the ESP8266 Technical Reference (as used by the
  * esp8266 Arduino core headers).
@@ -19,6 +22,8 @@ export const GPIO_IN = 0x3ff00018;
 export const GPIO_OUT = 0x600003fc;
 
 const MASK16 = 0xffff;
+/** Logical view: 16-bit GPIO block plus the GPIO16 (RTC) block as bit 16. */
+const MASK17 = 0x1ffff;
 
 export type InputSampler = (mask: number) => number;
 export type ChangeListener = (changedMask: number) => void;
@@ -41,25 +46,25 @@ export class GpioRegisters {
   }
 
   write(addr: number, value: number): void {
-    const v = value & MASK16;
+    const v = value & MASK17;
     switch (addr) {
       case GPIO_OUT:
-        this.setOut(v);
+        this.setOut((this.out & ~MASK16) | (v & MASK16));
         break;
       case GPIO_OUT_W1TS:
-        this.setOut((this.out | v) & MASK16);
+        this.setOut((this.out | v) & MASK17);
         break;
       case GPIO_OUT_W1TC:
-        this.setOut(this.out & ~v & MASK16);
+        this.setOut(this.out & ~v & MASK17);
         break;
       case GPIO_ENABLE:
-        this.setEnable(v);
+        this.setEnable((this.enable & ~MASK16) | (v & MASK16));
         break;
       case GPIO_ENABLE_W1TS:
-        this.setEnable((this.enable | v) & MASK16);
+        this.setEnable((this.enable | v) & MASK17);
         break;
       case GPIO_ENABLE_W1TC:
-        this.setEnable(this.enable & ~v & MASK16);
+        this.setEnable(this.enable & ~v & MASK17);
         break;
       default:
         throw new Error(`unknown GPIO register address 0x${addr.toString(16)}`);
@@ -69,14 +74,24 @@ export class GpioRegisters {
   read(addr: number): number {
     switch (addr) {
       case GPIO_OUT:
-        return this.out;
+        return this.out & MASK16;
       case GPIO_ENABLE:
-        return this.enable;
+        return this.enable & MASK16;
       case GPIO_IN:
-        return this.sampleInputs(MASK16) & MASK16;
+        return this.sampleInputs(MASK17) & MASK17;
       default:
         throw new Error(`unknown GPIO register address 0x${addr.toString(16)}`);
     }
+  }
+
+  /** Full 17-bit logical output state (GPIO0..15 register block + GPIO16). */
+  outState(): number {
+    return this.out & MASK17;
+  }
+
+  /** Full 17-bit logical output-enable state. */
+  enableState(): number {
+    return this.enable & MASK17;
   }
 
   reset(): void {

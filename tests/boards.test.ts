@@ -105,3 +105,13 @@ describe('board layout metadata (used by the GUI renderer)', () => {
     }
   });
 });
+
+describe('rail name hygiene (P0.6)', () => {
+  const POWER = new Set(['3V3', '5V', 'GND', 'VIN', 'VS', 'VU', 'EN', 'RST']);
+  it('signal silks are unique per board (power rails may repeat)', () => {
+    for (const b of listBoards()) {
+      const signals = b.rails.filter((r) => !POWER.has(r.name)).map((r) => r.name);
+      expect(new Set(signals).size).toBe(signals.length);
+    }
+  });
+});

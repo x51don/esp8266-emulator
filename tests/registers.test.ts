@@ -1,9 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { GpioRegisters, GPIO_ENABLE, GPIO_ENABLE_W1TS, GPIO_ENABLE_W1TC, GPIO_OUT, GPIO_OUT_W1TS, GPIO_OUT_W1TC, GPIO_IN } from '../core/registers';
 
-// Models the ESP8266 GPIO register file (GPIO0..GPIO15 half; GPIO16 lives in a
-// separate block on real silicon and is handled by the machine). Addresses match
-// the ESP8266 Technical Reference / esp8266 Arduino core headers.
+// Models the ESP8266 GPIO register file. GPIO16 (D0) lives in a separate (RTC)
+// block on real silicon and is kept as an internal 17th bit: the 16-bit
+// GPIO_OUT/ENABLE reads hide it, outState()/enableState() and the change
+// listeners carry it. Addresses match the Technical Reference / Arduino core.
 
 describe('GpioRegisters - addresses', () => {
   it('exposes the documented peripheral addresses', () => {
@@ -67,7 +68,7 @@ describe('GpioRegisters - IN sampling', () => {
     const sampler = vi.fn((mask: number) => (mask & 0b1010) !== 0 ? 0b1010 : 0);
     const r = new GpioRegisters(sampler);
     expect(r.read(GPIO_IN)).toBe(0b1010);
-    expect(sampler).toHaveBeenCalledWith(0xffff);
+    expect(sampler).toHaveBeenCalledWith(0x1ffff); // all 17 pins sampled
   });
 
   it('defaults IN to low without a sampler', () => {
@@ -108,5 +109,45 @@ describe('GpioRegisters - change notification', () => {
     expect(r.read(GPIO_ENABLE)).toBe(0);
     expect(out).toEqual([0b110]);
     expect(en).toEqual([0b110]);
+  });
+});
+
+describe('GpioRegisters - GPIO16 / D0 block (P0.2)', () => {
+  it('bit 16 of W1TS/W1TC sets and clears the GPIO16 output latch', () => {
+    const r = new GpioRegisters();
+    r.write(GPIO_OUT_W1TS, 1 << 16);
+    expect(r.outState() & (1 << 16)).not.toBe(0);
+    r.write(GPIO_OUT_W1TC, 1 << 16);
+    expect(r.outState() & (1 << 16)).toBe(0);
+  });
+
+  it('GPIO_OUT reads as the 16-bit register it is on real silicon', () => {
+    const r = new GpioRegisters();
+    r.write(GPIO_OUT_W1TS, 1 << 16);
+    expect(r.read(GPIO_OUT)).toBe(0); // register bits [15:0] only
+    expect(r.outState() >>> 16).toBe(1); // logical view carries the 17th bit
+  });
+
+  it('change listeners see bit 16; reset clears it', () => {
+    const r = new GpioRegisters();
+    const seen: number[] = [];
+    r.onOutChange((m) => seen.push(m));
+    r.write(GPIO_OUT_W1TS, 1 << 16);
+    expect(seen[seen.length - 1] & (1 << 16)).not.toBe(0);
+    r.reset();
+    expect(r.outState()).toBe(0);
+  });
+
+  it('GPIO_IN reads include the sampled GPIO16 level', () => {
+    const r = new GpioRegisters((m) => (m & (1 << 16) ? 1 << 16 : 0));
+    expect((r.read(GPIO_IN) >>> 16) & 1).toBe(1);
+  });
+
+  it('ENABLE bit 16 behaves like OUT bit 16', () => {
+    const r = new GpioRegisters();
+    r.write(GPIO_ENABLE_W1TS, 1 << 16);
+    expect(r.enableState() & (1 << 16)).not.toBe(0);
+    r.write(GPIO_ENABLE_W1TC, 1 << 16);
+    expect(r.enableState() & (1 << 16)).toBe(0);
   });
 });

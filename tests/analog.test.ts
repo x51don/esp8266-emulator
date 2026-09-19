@@ -88,3 +88,50 @@ describe('analogRead (machine)', () => {
     expect(v1).toBeGreaterThanOrEqual(993);
   });
 });
+
+// P3.1: a UI slider acting as a bench supply on the ADC pin. The force is
+// WEAK (source resistance ~10k), so a real driver on the same net wins the
+// divider instead of reporting a rail-to-rail short.
+describe('analog force editor (P3.1)', () => {
+  it('a forced voltage appears on a floating A0', () => {
+    const nl = netWithMcu();
+    nl.pinForce('adc1', 2.5, 'mcu.A0');
+    expect(near(nl.analogVolts('mcu.A0')!, 2.5)).toBe(true);
+  });
+
+  it('the force survives clear() (document resync keeps the slider)', () => {
+    const nl = netWithMcu();
+    nl.pinForce('adc1', 1.0, 'mcu.A0');
+    nl.addComponent('r1', 'resistor', { resistance: 1000 });
+    nl.clear();
+    expect(near(nl.analogVolts('mcu.A0')!, 1.0)).toBe(true);
+  });
+
+  it('force is weak: a 10k load halves it, no fault', () => {
+    const nl = netWithMcu();
+    nl.pinForce('adc1', 3.0, 'mcu.A0');
+    nl.addComponent('r1', 'resistor', { resistance: 10_000 });
+    nl.addWire('r1.p1', 'mcu.A0');
+    nl.addWire('r1.p2', 'mcu.GND');
+    expect(near(nl.analogVolts('mcu.A0')!, 1.5)).toBe(true);
+    expect(nl.resolve().faults).toEqual([]);
+  });
+
+  it('removing the force floats the pin again', () => {
+    const nl = netWithMcu();
+    nl.pinForce('adc1', 2.5, 'mcu.A0');
+    nl.pinForce('adc1', null, 'mcu.A0');
+    expect(nl.analogVolts('mcu.A0')).toBeNull();
+  });
+
+  it('machine.setAnalogForce scales into analogRead and survives resync', () => {
+    const m = new Esp8266Machine({ board: 'wemos-d1-mini' });
+    m.netlist.addComponent('mcu', 'mcu', { board: 'wemos-d1-mini' });
+    m.setAnalogForce(2.5);
+    expect(Math.abs(m.analogRead(17) - 775)).toBeLessThanOrEqual(5);
+    m.netlist.clear(); // what Schematic.syncNetlist does before rebuilding
+    expect(Math.abs(m.analogRead(17) - 775)).toBeLessThanOrEqual(5);
+    m.setAnalogForce(null);
+    expect(m.analogRead(17)).toBe(0);
+  });
+});

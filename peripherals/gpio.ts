@@ -52,6 +52,8 @@ interface PinState {
 export class GpioBus {
   private pins = new Map<number, PinState>();
   private listeners: Array<(gpio: number, snap: PinSnapshot) => void> = [];
+  /** Monotonic mutation counter; consumers cache circuit solves keyed on it. */
+  version = 0;
 
   constructor() {
     for (let g = 0; g < GPIO_COUNT; g++) {
@@ -59,8 +61,12 @@ export class GpioBus {
     }
   }
 
-  onPinChange(listener: (gpio: number, snap: PinSnapshot) => void): void {
+  onPinChange(listener: (gpio: number, snap: PinSnapshot) => void): () => void {
     this.listeners.push(listener);
+    return () => {
+      const i = this.listeners.indexOf(listener);
+      if (i >= 0) this.listeners.splice(i, 1);
+    };
   }
 
   getMode(gpio: number): PinMode {
@@ -182,6 +188,7 @@ export class GpioBus {
   }
 
   private notify(gpio: number): void {
+    this.version++; // electrical-state change: cached circuit resolves are stale
     const snap = this.snapshot(gpio);
     for (const l of this.listeners) l(gpio, snap);
   }
