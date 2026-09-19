@@ -142,7 +142,7 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
 core/          clock, registers, machine facade, boards, sketch interpreter
 peripherals/   GPIO bus, circuit netlist solver
 gui/           React app: canvas engine, components, sim driver
-scripts/       verify.mjs .. verify9.mjs (headless-CDP E2E, ports 933x), demo.mjs
+scripts/       verify.mjs .. verify10.mjs (headless-CDP E2E, ports 933x), demo.mjs
 examples/      blink, pwm-fade, button, serial-hello, pot-serial, ldr-led,
                dht-oled, servo-pot, neopixel-chase, hcsr-serial, relay-pump,
                web-server, lan-server, lan-client
