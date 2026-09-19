@@ -5,7 +5,7 @@
  */
 
 import type { ResolveResult } from '../../peripherals/netlist';
-import { footprintFor, type PlacedComponent, type Schematic, type TerminalRef, pinExitDir } from './schematic';
+import { footprintFor, type PlacedComponent, type Schematic, type TerminalRef, pinExitDir, WIRE_ROLE_COLORS, type WireSeg } from './schematic';
 import { gridStep, visibleCells } from './grid';
 import { getBoard } from '../../core/boards';
 import { routeWire } from './routes';
@@ -159,6 +159,16 @@ function netFaulted(s: RenderScene, terminal: string): boolean {
   return net !== undefined && s.circuit.faults.some((f) => f.net === net);
 }
 
+/**
+ * F14: fault wins, then the wire's explicit colour, then the automatic net
+ * role (power red / GND white / signal green). A live HIGH net adds a yellow
+ * glow on top of the role colour instead of replacing it.
+ */
+function wireColor(s: RenderScene, w: WireSeg): string {
+  if (w.color) return w.color;
+  return WIRE_ROLE_COLORS[s.schematic.netRoles().get(w.id) ?? 'signal'];
+}
+
 function drawWires(ctx: CanvasRenderingContext2D, s: RenderScene, pins: Map<string, Pt>): void {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
@@ -168,24 +178,27 @@ function drawWires(ctx: CanvasRenderingContext2D, s: RenderScene, pins: Map<stri
     if (!a || !b) continue; // component deleted mid-frame
     const ta = `${w.a.comp}.${w.a.pin}`;
     const tb = `${w.b.comp}.${w.b.pin}`;
+    const fault = netFaulted(s, ta) || netFaulted(s, tb);
     const hot =
       (netLevel(s, ta) ?? 0) > 1.65 || (netLevel(s, tb) ?? 0) > 1.65;
-    ctx.strokeStyle = netFaulted(s, ta) || netFaulted(s, tb)
-      ? C.wireFault
-      : hot ? C.wireHot : C.wire;
-    ctx.lineWidth = 2;
+    const base = fault ? C.wireFault : wireColor(s, w);
     const path = s.schematic.wireRoutes().get(w.id) ?? [a, b];
     if (s.hoverWire === w.id) {
       // hover halo: thicker selection-coloured underlay under the normal stroke
       ctx.strokeStyle = C.select;
       ctx.lineWidth = 5;
       strokeWorld(ctx, s, path);
-      ctx.strokeStyle = netFaulted(s, ta) || netFaulted(s, tb)
-        ? C.wireFault
-        : hot ? C.wireHot : C.wire;
-      ctx.lineWidth = 2;
     }
+    ctx.strokeStyle = base;
+    ctx.lineWidth = 2;
     strokeWorld(ctx, s, path);
+    if (hot && !fault) {
+      ctx.save();
+      ctx.strokeStyle = C.wireHot;
+      ctx.globalAlpha = 0.55;
+      strokeWorld(ctx, s, path);
+      ctx.restore();
+    }
   }
   drawCrossingGlyphs(ctx, s);
 }
@@ -239,7 +252,7 @@ function drawCrossingGlyphs(ctx: CanvasRenderingContext2D, s: RenderScene): void
     const d1 = dirAtPoint(p1, sp, s);
     const d2 = dirAtPoint(p2, sp, s);
     if (same) {
-      ctx.strokeStyle = C.wire;
+      ctx.strokeStyle = wireColor(s, w1);
       ctx.lineWidth = 2;
       for (const d of [d1, d2]) {
         if (d === null) continue;
@@ -255,7 +268,7 @@ function drawCrossingGlyphs(ctx: CanvasRenderingContext2D, s: RenderScene): void
       continue;
     }
     if (d1 !== null) {
-      ctx.strokeStyle = C.wire;
+      ctx.strokeStyle = wireColor(s, w1);
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(sp.x - Math.cos(d1) * 6, sp.y - Math.sin(d1) * 6);
@@ -265,7 +278,7 @@ function drawCrossingGlyphs(ctx: CanvasRenderingContext2D, s: RenderScene): void
     if (d2 !== null) {
       // semicircle whose endpoints sit on w2's line, bulging across w1's line
       const start = d2 === 0 ? 0 : -Math.PI / 2;
-      ctx.strokeStyle = C.wire;
+      ctx.strokeStyle = wireColor(s, w2);
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(sp.x, sp.y, 4, start, start + Math.PI, false);

@@ -579,3 +579,54 @@ label.mini-btn {
 
 .device-sleep { color: #b48cff; }
 .device-z { font-size: 9px; }
+
+/* ---- wire colour palette (F14) ---- */
+.wire-color-menu {
+  position: absolute;
+  z-index: 30;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  padding: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  user-select: none;
+}
+
+.wire-color-auto {
+  background: none;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+
+.wire-color-auto:hover {
+  border-color: var(--select);
+}
+
+.wire-color-swatches {
+  display: grid;
+  grid-template-columns: repeat(6, 18px);
+  gap: 4px;
+}
+
+.wire-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+  padding: 0;
+}
+
+.wire-swatch:hover {
+  outline: 1px solid var(--text);
+}
+
+.wire-swatch.active {
+  outline: 2px solid var(--select);
+}

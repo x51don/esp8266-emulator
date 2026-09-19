@@ -41,6 +41,8 @@ export interface WireSeg {
   b: TerminalRef;
   /** manual waypoints (world) set by dragging a segment; auto-route off */
   custom?: Pt[];
+  /** F14: explicit wire colour (hex); undefined = auto by net role */
+  color?: string;
 }
 
 /** Where two wire paths cross; `w2` is drawn on top (gets the hop glyph). */
@@ -183,6 +185,40 @@ interface DocShape {
   wireSeq: number;
 }
 
+/**
+ * F14 net roles driving the default wire colours. Classification is purely
+ * topological (which pins the copper touches), so it works with no solver
+ * run: power = a positive rail/battery +, gnd = any ground pin, signal =
+ * everything else. A net that is both power and gnd is a short; the solver
+ * faults it and we paint it power-red.
+ */
+export type NetRole = 'power' | 'gnd' | 'signal';
+
+/** Electronics convention, tuned for the dark theme: power red, GND white. */
+export const WIRE_ROLE_COLORS: Record<NetRole, string> = {
+  power: '#ff5252',
+  gnd: '#e8eef5',
+  signal: '#4ade80',
+};
+
+const GND_PIN = /^(gnd\d*|g|vss|vee|-)$/i;
+const PWR_PIN = /^(vcc\d*|vdd|vin|vs|vu|vbat|5v|3v3|3\.3v|\+)$/i;
+
+function pinRole(ref: TerminalRef): NetRole | null {
+  if (PWR_PIN.test(ref.pin)) return 'power';
+  if (GND_PIN.test(ref.pin)) return 'gnd';
+  return null;
+}
+
+/**
+ * The role of the wire's whole net: wires merge nets through shared pins,
+ * so the classification floods across every wire touching the same terminal
+ * (but never through components - a resistor separates two nets).
+ */
+export function netRoleOf(sc: Schematic, wireId: string): NetRole {
+  return sc.netRoles().get(wireId) ?? 'signal';
+}
+
 export class Schematic {
   components = new Map<string, PlacedComponent>();
   wires = new Map<string, WireSeg>();
@@ -190,6 +226,7 @@ export class Schematic {
   private wireSeq = 0;
   private routesCache: Map<string, Pt[]> | null = null;
   private crossingsCache: Crossing[] | null = null;
+  private roleCache: Map<string, NetRole> | null = null;
   private dragging = false;
 
   /** Public change counter (P1.3): the canvas frame loop skips renderScene
@@ -204,6 +241,7 @@ export class Schematic {
     if (this.dragging) return;
     this.routesCache = null;
     this.crossingsCache = null;
+    this.roleCache = null;
   }
 
   /** Freeze derived caches for a drag session (P1.2 cheap drag). */
@@ -314,6 +352,67 @@ export class Schematic {
   removeWire(id: string): void {
     this.wires.delete(id);
     this.touch();
+  }
+
+  wireOf(id: string): WireSeg | undefined {
+    return this.wires.get(id);
+  }
+
+  /** F14: paint one wire; `undefined` returns it to the automatic colour. */
+  setWireColor(id: string, color: string | undefined): void {
+    const w = this.wires.get(id);
+    if (!w) return;
+    if (color === undefined) delete w.color;
+    else w.color = color;
+    this.version++; // colour is not a topology change; keep routes cached
+  }
+
+  /** Role of every wire, derived once per change (F14). */
+  netRoles(): Map<string, NetRole> {
+    if (this.roleCache) return this.roleCache;
+    // net id per terminal: DSU over wire endpoints
+    const parent = new Map<string, string>(); // missing entry == its own root
+    const find = (k: string): string => {
+      let root = k;
+      for (;;) {
+        const p = parent.get(root);
+        if (p === undefined || p === root) break;
+        root = p;
+      }
+      let cur = k;
+      for (;;) {
+        const p = parent.get(cur);
+        if (p === undefined || p === root) break;
+        parent.set(cur, root);
+        cur = p;
+      }
+      return root;
+    };
+    const key = (c: TerminalRef): string => `${c.comp}.${c.pin}`;
+    for (const w of this.wires.values()) {
+      const ra = find(key(w.a));
+      const rb = find(key(w.b));
+      if (ra !== rb) parent.set(ra, rb);
+    }
+    // best (highest-ranked) role seen per net
+    const rank: Record<NetRole, number> = { signal: 0, gnd: 1, power: 2 };
+    const netRole = new Map<string, NetRole>();
+    const bump = (k: string, r: NetRole): void => {
+      const root = find(k);
+      const cur = netRole.get(root) ?? 'signal';
+      if (rank[r] > rank[cur]) netRole.set(root, r);
+    };
+    for (const c of this.components.values()) {
+      for (const p of footprintFor(c.type, c.params).pins) {
+        const role = pinRole({ comp: c.id, pin: p.name });
+        if (role) bump(`${c.id}.${p.name}`, role);
+      }
+    }
+    const out = new Map<string, NetRole>();
+    for (const w of this.wires.values())
+      out.set(w.id, netRole.get(find(key(w.a))) ?? 'signal');
+    this.roleCache = out;
+    return out;
   }
 
   /** All pins of every component with their world positions (hit-testing). */
@@ -545,6 +644,9 @@ export class Schematic {
 
 // ---- document shape guards: bad imports die at load, not inside rAF render ----
 
+/** hex colour only - no `url()` or other CSS tricks in saved documents */
+export const WIRE_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -575,6 +677,8 @@ function isTerminalRef(v: unknown): v is TerminalRef {
 function isWire(v: unknown): v is WireSeg {
   if (!isObj(v)) return false;
   if (typeof v.id !== 'string' || !isTerminalRef(v.a) || !isTerminalRef(v.b)) return false;
+  if (v.color !== undefined && !WIRE_COLOR_RE.test(String(v.color)))
+    throw new Error(`invalid wire colour '${String(v.color).slice(0, 24)}'`);
   if (v.custom === undefined) return true;
   return (
     Array.isArray(v.custom) &&

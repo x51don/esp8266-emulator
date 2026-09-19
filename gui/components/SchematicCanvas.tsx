@@ -4,11 +4,12 @@
  * (selection count, faults); the 60 fps path is imperative.
  */
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { COMPONENT_MIME, dragState } from '../dnd';
 import { AdcDock } from './AdcDock';
 import { Esp8266Machine } from '../../core/machine';
 import { nearestPin, polylineHit } from '../canvas/hit';
+import { WireColorMenu } from './WireColorMenu';
 import { renderScene } from '../canvas/renderer';
 import { snapToGrid } from '../canvas/grid';
 import type { Schematic, TerminalRef } from '../canvas/schematic';
@@ -70,6 +71,8 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
   const activeRelease = useRef<(() => void) | null>(null);
   const hoverPinRef = useRef<TerminalRef | null>(null);
   const hoverWireRef = useRef<string | null>(null);
+  // F14: {x,y} are canvas-host pixels; null hides the palette
+  const [wireMenu, setWireMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const ghostRef = useRef<{ type: string; x: number; y: number } | null>(null);
   const selectionRef = useRef<Set<string>>(new Set());
   const runningRef = useRef(running);
@@ -246,6 +249,18 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
     }
     return best;
   };
+
+  // F14: any pointer gesture on the canvas dismisses the colour palette
+  useEffect(() => {
+    if (!wireMenu) return;
+    const close = (): void => setWireMenu(null);
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('wheel', close);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('wheel', close);
+    };
+  }, [wireMenu]);
 
   // dbl-click a wire -> confirm -> remove just that wire
   const onDoubleClick = (e: React.MouseEvent): void => {
@@ -574,6 +589,20 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
       onDragLeave={() => {
         ghostRef.current = null;
       }}
+      onContextMenu={(e) => {
+        // F14: right-click a wire -> colour palette
+        e.preventDefault();
+        const cv = canvasRef.current;
+        if (!cv) return;
+        const rect = cv.getBoundingClientRect();
+        const w = vpRef.current.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+        const id = findWire(w);
+        if (!id) {
+          setWireMenu(null);
+          return;
+        }
+        setWireMenu({ x: e.clientX - rect.left, y: e.clientY - rect.top, id });
+      }}
       onDrop={onDrop}
     >
       <canvas
@@ -584,6 +613,18 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
         onDoubleClick={onDoubleClick}
       />
       <AdcDock machine={machine} />
+      {wireMenu && (
+        <WireColorMenu
+          x={wireMenu.x}
+          y={wireMenu.y}
+          current={schematic.wireOf(wireMenu.id)?.color}
+          onPick={(color) => {
+            schematic.setWireColor(wireMenu.id, color);
+            setWireMenu(null);
+            onEdit();
+          }}
+        />
+      )}
     </div>
   );
 }
