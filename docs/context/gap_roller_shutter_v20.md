@@ -31,7 +31,7 @@ bezpośrednio w `core/sketch/lexer.ts`, `core/sketch/parser.ts`,
 4. Wartości-makra z cudzysłowem (`#define _VERSION "..."`) - ekspansja regexem
    działa, ale `$` w `String.replace` to znak specjalny: podstawiać funkcją.
 
-### F2. Parsowanie (`core/sketch/parser.ts`)
+### F2. Parsowanie (`core/sketch/parser.ts`) - ZROBIONE (milestone 12)
 5. Lambda `[]() { ... }` - 18 wystąpień (`server.on(path, lambda)`,
    `ArduinoOTA.onProgress([](...){...})`). Parser nie zna składni; potrzebna
    anonymous function (zarejestrowana jako `__lambda_N`) + wartość = nazwa.

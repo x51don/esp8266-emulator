@@ -32,12 +32,55 @@ Pułapki z tej sesji:
   `println`, inaczej `m.serial` pozostaje pusty.
 - `new Esp8266Machine()` wymaga `{ board }` (brak domyślnego).
 
-## F2 - lambdy, referencje, kwalifikatory (pending)
+## F2 - lambdy, referencje, kwalifikatory (done)
 
-`[](){}` jako wyrażenie (anonimowa funkcja rejestrowana pod
-`__lambda_N`), parametr `int &out` (copy-out po `return`), `T* name`
-traktowane jak `T`, `volatile` jako kwalifikator do zignorowania,
-deklaracja z konstruktorem `ESP8266WebServer server(80);`.
+Parser (`core/sketch/parser.ts`):
+
+- Lambda `[](...) { ... }` w dowolnym wyrażeniu: łapania (`[x]`, `[=]`,
+  `[&]`) odrzucane z komunikatem; bez łapanć lambda staje się
+  `FuncDef`iem `__lambda_N` doklejanym do `Program.globals`, a
+  wyrażenie to `Ident(__lambda_N)` - wartość to nazwa (decay jak za
+  `attachInterrupt`).
+- Parametry: `int &out`, `String& s`, `char* p` - kwalifikatory między
+  typem a nazwą; `byRef: true` tylko gdy referencja (stare AST bez
+  pola - testy strukturalne nie pękły).
+- Współdzielona `parseParamList()` dla funkii i lambd.
+- Deklaracje: `const char* ssid = "..."` (global i lokalnie) - `*`
+  przed nazwą podnosi `char` do typu `String`; `&` pomijany.
+- Deklaracja z konstruktorem: `Server server(80);` na poziomie globalu
+  odróżniana od definicji funkcji heurystyką `looksLikeParamList()`
+  (`)` lub typ po `(` = parametry; literał/identyfikator = argumenty
+  konstruktora -> `init = Call(type, args)`).
+- `volatile` jako kwalifikator bez znaczenia (parseModifiers,
+  startsDecl).
+
+Interpreter (`core/sketch/interp.ts`):
+
+- Dynamiczna dyspozycja w `Call`: nazwa nie jest funkcja -> zaglądamy
+  do zmiennej; trzyma nazwę funkcji użytkownika -> wywołujemy ją.
+  To ścieżka wywołania lambd (i wskaźników funkcji).
+- `byRef` = copy-out: `Call` zbiera `RefOut{param, store}` ze
+  wskaźników na l-wartość wywołującego (`storeInto`), a
+  `callUserExpr` odpisuje wartości parametrów po `return`.
+- `assignInto` pozwala `int = string` (komórka zmienia `k` w miejscu) -
+  inaczej `int cb = [](){...}` nie przechodzi.
+- `evalConst`: `true/false`, stałe środowiska i wcześniejsze globalne
+  inicjalizatory (`int b = a;`).
+- Tokeny obiektów: jedna tabela `OBJECT_TYPES` (WiFi*/WebServer/
+  HTTPClient/IPAddress/Adafruit_NeoPixel), argumenty konstruktora
+  jako `number[]` lecą do `env.objectDecl`; machine trzyma je w
+  `wifi.objs.args` (F4/F5 z tego skorzystają).
+
+Testy: `tests/syntax-f2.test.ts` (9): lambda przez parametr, lambda ze
+zmienną, parametry lambdy, odrzucenie capture, `int&`/`String&`
+copy-out (w tym brak zapisu gdy early-return), `const char*` +
+`volatile`, `ESP8266WebServer server(80);` + `HTTPClient h;` +
+`IPAddress ip(...)` jako deklaracje tokenów. 377/377, tsc + build
+czyste.
+
+Znane ograniczenia: `T x(nazwaZmiennej);` na poziomie globalu może
+zostać wzięte za definicję funkcji bez typu parametru; referencja nie
+działa dla tablic; capture brak.
 
 ## F3 - API rdzenia (pending)
 

@@ -79,7 +79,13 @@ export class Esp8266Machine {
   private wifi = {
     /** µs timestamp when the link comes up; null = not associated. */
     connectAt: null as number | null,
-    objs: new Map<string, { kind: 'WiFiClient' | 'WiFiServer' | 'WiFiUDP'; port: number; peer: string | null; listening: boolean }>(),
+    objs: new Map<string, {
+      kind: 'WiFiClient' | 'WiFiServer' | 'WiFiUDP' | 'ESP8266WebServer' | 'HTTPClient' | 'IPAddress' | 'Adafruit_NeoPixel';
+      port: number;
+      peer: string | null;
+      listening: boolean;
+      args: number[];
+    }>(),
   };
   /** P3.2 attachInterrupt(): gpio -> {isr, mode}; CHANGE=0 FALLING=1 RISING=2. */
   private attachments = new Map<number, { fn: string; mode: number }>();
@@ -885,9 +891,11 @@ export class Esp8266Machine {
           }
         }
       },
-      objectDecl: (name: string, type: string, port: number) => {
-        if (type === 'WiFiClient' || type === 'WiFiServer' || type === 'WiFiUDP')
-          this.wifi.objs.set(name, { kind: type, port, peer: null, listening: false });
+      objectDecl: (name: string, type: string, args: number[]) => {
+        // all library objects share one registry; F4/F5 hang per-type state
+        // off `args` (NeoPixel count/pin, WebServer port, IPAddress octets)
+        const port = args.length ? args[0] : type === 'WiFiServer' || type === 'ESP8266WebServer' ? 80 : 0;
+        this.wifi.objs.set(name, { kind: type as never, port, peer: null, listening: false, args });
       },
     };
   }

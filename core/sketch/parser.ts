@@ -44,7 +44,7 @@ export interface FuncDef {
   kind: 'FuncDef';
   returnType: string;
   name: string;
-  params: { name: string; type: string }[];
+  params: { name: string; type: string; byRef?: boolean }[];
   body: Block;
   line: number;
 }
@@ -71,6 +71,8 @@ const TYPE_WORDS = new Set([
   'void', 'bool', 'char', 'short', 'int', 'long', 'float', 'double',
   'unsigned', 'signed', 'byte', 'word', 'String', 'uint8_t', 'uint16_t',
   'uint32_t', 'int8_t', 'int16_t', 'int32_t', 'size_t',
+  // object-library globals: ESP8266WebServer server(80); Adafruit_NeoPixel strip...;
+  'ESP8266WebServer', 'HTTPClient', 'IPAddress', 'Adafruit_NeoPixel',
   // WiFi mock object types (P3.3) - declarations only, see machine.wifiCall
   'WiFiClient', 'WiFiServer', 'WiFiUDP',
 ]);
@@ -133,19 +135,42 @@ class Parser {
     while (this.peek().type !== 'eof') {
       const line = this.peek().line;
       const { isConst, isStatic } = this.parseModifiers();
-      const type = this.parseType();
+      let type = this.parseType();
+      // pointer/reference declarators before the global name: `const char* ssid`
+      let globalStar = false;
+      while (this.isPunct('*') || this.isPunct('&')) {
+        if (this.isPunct('*')) globalStar = true;
+        this.next();
+      }
+      if (globalStar && /(^|\s)char($|\s)/.test(type)) type = type.replace(/\bchar\b/, 'String');
       const nameTok = this.next();
       if (nameTok.type !== 'ident') {
         throw new SyntaxError(`expected identifier but found '${nameTok.value}' (line ${nameTok.line})`);
       }
-      if (this.isPunct('(')) {
+      if (this.isPunct('(') && this.looksLikeParamList()) {
         globals.push(this.parseFuncDefRest(type, nameTok.value, line));
       } else {
         globals.push(this.parseDeclRest(type, nameTok.value, isConst, isStatic, line));
       }
     }
-    return { kind: 'Program', globals };
+    return { kind: 'Program', globals: [...globals, ...this.lambdaFuncs] };
   }
+
+  /**
+   * `foo(` at global scope: a function definition iff the next token is
+   * `)` or a type word (`void h()`, `bool f(String x)`). A literal or a bare
+   * identifier means constructor arguments (`Server server(80)`).
+   */
+  private looksLikeParamList(): boolean {
+    const t = this.peek(1);
+    if (t.type === 'punct' && t.value === ')') return true;
+    if (t.type === 'punct' && (t.value === 'const' || t.value === '&')) return true;
+    return t.type === 'ident' && TYPE_WORDS.has(t.value);
+  }
+
+  /** Lambdas found while parsing expressions; flushed into Program.globals. */
+  private lambdaFuncs: FuncDef[] = [];
+  private lambdaCount = 0;
 
   private parseModifiers(): { isConst: boolean; isStatic: boolean } {
     let isConst = false;
@@ -153,6 +178,7 @@ class Parser {
     for (;;) {
       if (this.isKw('const')) { this.next(); isConst = true; }
       else if (this.isKw('static')) { this.next(); isStatic = true; }
+      else if (this.isKw('volatile')) { this.next(); } // qualifier: no semantics here
       else break;
     }
     return { isConst, isStatic };
@@ -178,7 +204,15 @@ class Parser {
 
   private parseFuncDefRest(returnType: string, name: string, line: number): FuncDef {
     this.eatPunct('(');
-    const params: { name: string; type: string }[] = [];
+    const params = this.parseParamList();
+    this.eatPunct(')');
+    const body = this.parseBlock();
+    return { kind: 'FuncDef', returnType, name, params, body, line };
+  }
+
+  /** `(` already eaten; returns before the closing `)`. */
+  private parseParamList(): { name: string; type: string; byRef?: boolean }[] {
+    const params: { name: string; type: string; byRef?: boolean }[] = [];
     if (!this.isPunct(')')) {
       do {
         if (this.isKw('void') && this.isPunct(')', 1)) break;
@@ -186,31 +220,61 @@ class Parser {
         while (this.peek().type === 'ident' && TYPE_WORDS.has(this.peek().value)) {
           ptypeWords.push(this.next().value);
         }
+        // qualifiers between type and name: `int &out`, `String& s`, `char* p`
+        let byRef = false;
+        let isPtr = false;
+        while (this.isPunct('&') || this.isPunct('*')) {
+          if (this.isPunct('&')) byRef = true;
+          else isPtr = true;
+          this.next();
+        }
         const pname = this.next();
         if (pname.type !== 'ident') {
           throw new SyntaxError(`expected parameter name (line ${pname.line})`);
         }
-        const ptype = ptypeWords.join(' ') || 'int';
+        let ptype = ptypeWords.join(' ') || 'int';
+        // `char*` parameters are C strings: model them as String values
+        if (isPtr && /(^|\s)char($|\s)/.test(ptype)) ptype = ptype.replace(/\bchar\b/, 'String');
         if (this.isPunct('[')) {
           // array parameter: `int arr[]` / `int pins[4]` - decays to a pointer
           this.next();
           if (this.peek().type === 'num') this.next();
           this.eatPunct(']');
-          params.push({ name: pname.value, type: `${ptype}[]` });
+          params.push({ name: pname.value, type: `${ptype}[]`, ...(byRef && { byRef }) });
         } else {
-          params.push({ name: pname.value, type: ptype });
+          params.push({ name: pname.value, type: ptype, ...(byRef && { byRef }) });
         }
       } while (this.isPunct(',') && this.next() !== undefined);
     }
-    this.eatPunct(')');
-    const body = this.parseBlock();
-    return { kind: 'FuncDef', returnType, name, params, body, line };
+    return params;
   }
 
-  private parseDeclRest(type: string, first: string, isConst: boolean, isStatic: boolean, line: number): VarDecl {
+  private parseDeclRest(type0: string, first: string, isConst: boolean, isStatic: boolean, line: number): VarDecl {
     const decls: Declarator[] = [];
+    let type = type0;
+    // pointer declarator at the first name: `const char* ssid` behaves as a string
+    let sawStarOnFirst = false;
+    if (this.isPunct('*')) {
+      this.next();
+      sawStarOnFirst = true;
+    }
+    if (this.isPunct('&')) this.next(); // reference alias: parsed, not aliased
+    if (sawStarOnFirst && /(^|\s)char($|\s)/.test(type)) type = type.replace(/\bchar\b/, 'String');
     for (;;) {
       const nameTok = first !== '' && decls.length === 0 ? { value: first } : this.declName();
+      // constructor-style declaration: `ESP8266WebServer server(80);` - keep
+      // the arguments as a Call so the object token can consume them
+      let ctorArgs: Expr[] | null = null;
+      if (this.isPunct('(')) {
+        this.next();
+        ctorArgs = [];
+        if (!this.isPunct(')')) {
+          do {
+            ctorArgs.push(this.parseAssign());
+          } while (this.isPunct(',') && this.next() !== undefined);
+        }
+        this.eatPunct(')');
+      }
       let arraySize: number | null = null;
       if (this.isPunct('[')) {
         this.next();
@@ -222,6 +286,8 @@ class Parser {
         this.next();
         if (this.isPunct('{')) init = this.parseArrayLit();
         else init = this.parseAssign();
+      } else if (ctorArgs !== null) {
+        init = { kind: 'Call', callee: type, args: ctorArgs, line };
       }
       decls.push({ name: (nameTok as { value: string }).value, init, arraySize });
       if (this.isPunct(',')) { this.next(); continue; }
@@ -305,7 +371,7 @@ class Parser {
 
   private startsDecl(): boolean {
     let k = 0;
-    while (this.isKw('const', k) || this.isKw('static', k)) k++;
+    while (this.isKw('const', k) || this.isKw('static', k) || this.isKw('volatile', k)) k++;
     const t = this.peek(k);
     return t.type === 'ident' && TYPE_WORDS.has(t.value);
   }
@@ -488,6 +554,25 @@ class Parser {
     return k > 1 && this.isPunct(')', k);
   }
 
+  /** `[` already eaten. Only captureless [](...)  {...} lambdas are supported. */
+  private parseLambdaRest(line: number): Expr {
+    const cap = this.peek();
+    if (!(cap.type === 'punct' && cap.value === ']')) {
+      throw new SyntaxError(
+        `lambda captures are not supported; use [] () { ... } (line ${cap.line})`,
+      );
+    }
+    this.next(); // ]
+    this.eatPunct('(');
+    const params = this.parseParamList();
+    this.eatPunct(')');
+    const body = this.parseBlock();
+    const name = `__lambda_${this.lambdaCount++}`;
+    this.lambdaFuncs.push({ kind: 'FuncDef', returnType: 'int', name, params, body, line });
+    // value = the synthetic function's name; Ident-of-a-function decays to it
+    return { kind: 'Ident', name, line };
+  }
+
   private parsePostfix(): Expr {
     let e = this.parsePrimary();
     for (;;) {
@@ -545,6 +630,7 @@ class Parser {
           this.eatPunct(')');
           return e;
         }
+        if (t.value === '[') return this.parseLambdaRest(t.line);
         break;
       default:
         break;

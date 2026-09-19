@@ -45,7 +45,7 @@ export interface InterpreterEnv {
   millis(): number;
   micros(): number;
   /** WiFi object declaration (P3.3): name, class, constructor port. */
-  objectDecl?(name: string, type: string, port: number): void;
+  objectDecl?(name: string, type: string, args: number[]): void;
 }
 
 export class SketchRuntimeError extends Error {
@@ -147,6 +147,12 @@ type Ctrl =
 
 const NORMAL: Ctrl = { type: 'normal' };
 
+/** copy-out binding for a byRef parameter (caller-side lvalue store) */
+interface RefOut {
+  param: string;
+  store: (v: Val) => void;
+}
+
 interface Scope {
   vars: Map<string, Val>;
   parent?: Scope;
@@ -223,15 +229,31 @@ export class Interpreter {
   }
 
   /** WiFi mock instances are opaque tokens; the machine tracks their state. */
+  /**
+   * Library objects exist as string tokens (`@WiFiClient:0`); the machine
+   * registers the real per-name state through env.objectDecl. Constructor
+   * syntax (`Server server(80);`) and `= Server(80)` both arrive as a Call
+   * whose callee is the type name.
+   */
   private wifiToken(d: Declarator, g: VarDecl): Val | null {
-    if (g.type !== 'WiFiClient' && g.type !== 'WiFiServer' && g.type !== 'WiFiUDP')
-      return null;
-    let port = 80;
-    if (d.init && d.init.kind === 'Call' && d.init.callee === g.type && d.init.args[0]?.kind === 'Num')
-      port = (d.init.args[0] as { v: number }).v;
-    this.env.objectDecl?.(d.name, g.type, port);
-    return { k: 's', v: `@${g.type}:${port}` };
+    if (!Interpreter.OBJECT_TYPES.has(g.type)) return null;
+    const args: number[] = [];
+    if (d.init && d.init.kind === 'Call' && d.init.callee === g.type) {
+      for (const a of d.init.args) {
+        try {
+          args.push(asInt(this.evalConst(a, g.line), g.line));
+        } catch {
+          args.push(0); // non-constant ctor argument: token keeps 0
+        }
+      }
+    }
+    this.env.objectDecl?.(d.name, g.type, args);
+    return { k: 's', v: `@${g.type}:${args.join(',')}` };
   }
+  private static readonly OBJECT_TYPES = new Set([
+    'WiFiClient', 'WiFiServer', 'WiFiUDP',
+    'ESP8266WebServer', 'HTTPClient', 'IPAddress', 'Adafruit_NeoPixel',
+  ]);
 
   private globalInit(d: Declarator, g: VarDecl): Val {
     const tok = this.wifiToken(d, g);
@@ -309,6 +331,18 @@ export class Interpreter {
       }
       case 'ArrayLit':
         return { k: 'a', v: e.elems.map((x) => this.evalConst(x, e.line)), int: true };
+      case 'Ident': {
+        if (e.name === 'true') return numVal(1, true);
+        if (e.name === 'false') return numVal(0, true);
+        const c = this.env.constants[e.name];
+        if (c !== undefined) return numVal(c, true);
+        // an earlier global initializer is a constant for this one (`int b = a;`)
+        const seen = this.globals?.vars.get(e.name);
+        if (seen) return dup(seen);
+        throw new SketchRuntimeError(
+          'global initializers must be constant expressions', line,
+        );
+      }
       default:
         throw new SketchRuntimeError(
           'global initializers must be constant expressions', line,
@@ -637,11 +671,26 @@ export class Interpreter {
         if (e.callee === 'micros') return numVal(this.env.micros(), true);
         const args: Val[] = [];
         for (const a of e.args) args.push(yield* this.eval(a, scope));
-        const fn = this.funcs.get(e.callee);
+        // dynamic dispatch: a variable holding a function name (lambdas and
+        // function pointers decay to their name) calls through the variable
+        let callee = e.callee;
+        if (!this.funcs.has(callee)) {
+          const held = lookupIn(scope, callee);
+          if (held && held.k === 's' && this.funcs.has(held.v)) callee = held.v;
+        }
+        const fn = this.funcs.get(callee);
         if (fn) {
+          // byRef parameters copy out into the caller's lvalue on return
+          const refs: RefOut[] = [];
+          fn.def.params.forEach((prm, i) => {
+            if (!prm.byRef) return;
+            const target = e.args[i];
+            if (!target) return;
+            refs.push({ param: prm.name, store: (v) => this.storeInto(target, v, scope, e.line) });
+          });
           // callUser yields void; user calls are statements w.r.t. values:
           // emulate a return value by running it and capturing via closure.
-          return yield* this.callUserExpr(fn, args, e.line);
+          return yield* this.callUserExpr(fn, args, e.line, refs);
         }
         const res = this.env.call(e.callee, args.map(toHost));
         if (res.suspend) {
@@ -673,6 +722,7 @@ export class Interpreter {
     fn: FuncInstance,
     args: Val[],
     line: number,
+    refs?: RefOut[],
   ): Generator<Pause, Val, HostValue | undefined> {
     if (++this.depth > MAX_CALL_DEPTH) {
       this.depth--;
@@ -683,6 +733,12 @@ export class Interpreter {
       fn.def.params.forEach((p, idx) => scope.vars.set(p.name, args[idx] ?? numVal(0, true)));
       this.bindStatics(fn, scope);
       const ctrl = yield* this.execList(fn.def.body.body, scope);
+      if (refs) {
+        for (const r of refs) {
+          const v = scope.vars.get(r.param);
+          if (v) r.store(v);
+        }
+      }
       return ctrl.type === 'return' ? ctrl.value : VOID;
     } finally {
       this.depth--;
@@ -776,6 +832,14 @@ export class Interpreter {
     }
     if (dest.k === 's' && src.k !== 'a') {
       dest.v = strOf(src);
+      return;
+    }
+    if (dest.k === 'n' && src.k === 's') {
+      // function handles (lambdas, function names) live in int-typed cells;
+      // the cell changes kind in place so holders of the reference see it
+      const cell = dest as unknown as { k: string; v: string };
+      cell.k = 's';
+      cell.v = src.v;
       return;
     }
     if (dest.k === 'a' && src.k === 'a') {
