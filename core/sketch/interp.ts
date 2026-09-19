@@ -719,6 +719,16 @@ export class Interpreter {
           // emulate a return value by running it and capturing via closure.
           return yield* this.callUserExpr(fn, args, e.line, refs);
         }
+        // chained members: `server.arg("v").toInt()` - the receiver already
+        // evaluated to a value; only Strings carry methods this way
+        if (e.recv) {
+          const rv = yield* this.eval(e.recv, scope);
+          if (rv.k !== 's' || rv.v.startsWith('@'))
+            throw new SketchRuntimeError(
+              `cannot call '${e.callee}' on this value`, e.line,
+            );
+          return strMethod(rv.v, e.callee, args, e.line);
+        }
         // methods on String values (`v.length()`, `v.toInt()`, ...): the
         // receiver is a sketch variable holding an 's' Val, not a host object
         if (!this.funcs.has(callee) && callee.includes('.')) {

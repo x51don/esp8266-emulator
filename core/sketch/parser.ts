@@ -22,7 +22,7 @@ export interface Binary { kind: 'Binary'; op: string; left: Expr; right: Expr; l
 export interface Logical { kind: 'Logical'; op: '&&' | '||'; left: Expr; right: Expr; line: number }
 export interface Cond { kind: 'Cond'; test: Expr; cons: Expr; alt: Expr; line: number }
 export interface Assign { kind: 'Assign'; op: string; target: Expr; value: Expr; line: number }
-export interface Call { kind: 'Call'; callee: string; args: Expr[]; line: number }
+export interface Call { kind: 'Call'; callee: string; args: Expr[]; line: number; recv?: Expr }
 export interface Index { kind: 'Index'; obj: Expr; index: Expr; line: number }
 export interface Cast { kind: 'Cast'; castType: string; expr: Expr; line: number }
 export interface ArrayLit { kind: 'ArrayLit'; elems: Expr[]; line: number }
@@ -573,32 +573,50 @@ class Parser {
     return { kind: 'Ident', name, line };
   }
 
+  /** `(a, b, c)` at the current position; the opening paren is consumed. */
+  private parseArgs(): Expr[] {
+    const args: Expr[] = [];
+    if (!this.isPunct(')')) {
+      do {
+        args.push(this.parseAssign());
+      } while (this.isPunct(',') && this.next() !== undefined);
+    }
+    this.eatPunct(')');
+    return args;
+  }
+
   private parsePostfix(): Expr {
     let e = this.parsePrimary();
     for (;;) {
       if (this.isPunct('.')) {
-        // only object.method() is supported (Serial.println(...)) - merge the
-        // dotted name into the Ident; bare member access stays a syntax error
+        // object.method() (Serial.println(...)) merges the dotted name into
+        // the Ident; on any other expression the method applies to its value
+        // (`server.arg("v").toInt()`), kept as Call.recv
         this.next();
         const prop = this.next();
-        if (e.kind !== 'Ident' || prop.type !== 'ident') {
+        if (prop.type !== 'ident') {
           throw new SyntaxError(
             `only 'object.method()' access is supported (line ${prop.line})`,
           );
         }
-        e = { kind: 'Ident', name: `${(e as Ident).name}.${prop.value}`, line: e.line };
+        if (e.kind === 'Ident') {
+          e = { kind: 'Ident', name: `${(e as Ident).name}.${prop.value}`, line: e.line };
+        } else {
+          if (!this.isPunct('(')) {
+            throw new SyntaxError(
+              `method '${prop.value}' needs a call (line ${prop.line})`,
+            );
+          }
+          const line = this.next().line;
+          const args = this.parseArgs();
+          e = { kind: 'Call', callee: prop.value, args, line, recv: e };
+        }
       } else if (this.isPunct('(')) {
         if (e.kind !== 'Ident') {
           throw new SyntaxError(`only plain function calls are supported (line ${e.line})`);
         }
         const line = this.next().line;
-        const args: Expr[] = [];
-        if (!this.isPunct(')')) {
-          do {
-            args.push(this.parseAssign());
-          } while (this.isPunct(',') && this.next() !== undefined);
-        }
-        this.eatPunct(')');
+        const args = this.parseArgs();
         e = { kind: 'Call', callee: (e as Ident).name, args, line };
       } else if (this.isPunct('[')) {
         const line = this.next().line;

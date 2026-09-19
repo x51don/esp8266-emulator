@@ -17,6 +17,8 @@
  */
 
 import { Clock, type TimerId } from './clock';
+import { lan, parseForm, parseUrl } from './lan';
+import type { HttpReq, HttpResp, LanHost } from './lan';
 import {
   GpioRegisters, GPIO_OUT_W1TS, GPIO_OUT_W1TC, GPIO_ENABLE_W1TS, GPIO_ENABLE_W1TC,
 } from './registers';
@@ -66,9 +68,19 @@ interface LibObj {
   peer: string | null;
   listening: boolean;
   args: number[];
+  /** ESP8266WebServer routes: uri -> handler function name + method mask */
+  routes?: Map<string, { fn: string; method: number }>;
+  notFoundFn?: string;
+  active?: HttpReq | null;
+  /** HTTPClient request state */
+  url?: { ip: string; port: number; uri: string; args: [string, string][] } | null;
+  timeoutMs?: number;
+  outBody?: string;
+  resp?: HttpResp | null;
+  lastError?: number;
 }
 
-export class Esp8266Machine {
+export class Esp8266Machine implements LanHost {
   readonly clock = new Clock();
   readonly registers: GpioRegisters;
   readonly gpio = new GpioBus();
@@ -123,7 +135,28 @@ export class Esp8266Machine {
   /** -1 = unlimited; otherwise remaining interpreter yields for this advance. */
   private yieldBudget = -1;
 
-  constructor(opts: { board: string }) {
+  /** F5: LAN identity; two machines on one page need distinct ips. */
+  readonly ip: string;
+  private httpInbox: HttpReq[] = [];
+
+  /** LanHost: queue a request for this machine's HTTP server(s). */
+  deliver(req: HttpReq): void {
+    this.httpInbox.push(req);
+  }
+
+  /** LanHost: run this world by `ms` virtual ms (safe from another machine). */
+  pump(ms: number): void {
+    this.advance(ms);
+  }
+
+  /** drop the machine from the LAN (GUI: unmount / close tab) */
+  dispose(): void {
+    this.halt();
+    lan.unregister(this);
+  }
+
+  constructor(opts: { board: string; ip?: string }) {
+    this.ip = opts.ip ?? '192.168.1.42';
     this.boardId = opts.board;
     this.netlist = new Netlist(this.gpio);
     this.registers = new GpioRegisters((mask) => this.sampleIn(mask));
@@ -379,6 +412,208 @@ private ipCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
   }
 }
 
+/**
+ * ESP8266WebServer object API. Requests arrive through the LAN inbox
+ * (panel or another machine); handleClient() drains one per call, exactly
+ * like the real library. Handlers run to completion inside handleClient -
+ * delay() inside a handler is a documented no-op (milestone 12).
+ */
+private webCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
+  const num = (v: HostValue | undefined): number => (typeof v === 'number' ? v : Number(v ?? 0));
+  const str = (v: HostValue | undefined): string => (typeof v === 'string' ? v : String(v ?? ''));
+  if (!obj.routes) obj.routes = new Map();
+  switch (meth) {
+    case 'on': {
+      // on(path, fn) or on(path, HTTP_GET, fn)
+      const fn = str(args[args.length - 1]);
+      const method = args.length >= 3 ? num(args[1]) : 7;
+      if (!/^[\w]+$/.test(fn)) throw new Error(`server.on handler must be a function, got '${fn}'`);
+      obj.routes.set(str(args[0]), { fn, method });
+      return { value: 0 };
+    }
+    case 'onNotFound':
+      obj.notFoundFn = str(args[args.length - 1]);
+      return { value: 0 };
+    case 'begin':
+      obj.listening = true;
+      lan.register(this);
+      return { value: 0 };
+    case 'handleClient': {
+      const req = this.httpInbox.shift();
+      if (!req) return { value: 0 };
+      const route = obj.routes.get(req.uri);
+      const ok = route !== undefined && (route.method & (req.method === 'GET' ? 1 : 2)) !== 0;
+      obj.active = req;
+      try {
+        const fn = ok ? route.fn : obj.notFoundFn;
+        if (fn && this.interp?.hasFunction(fn)) this.drainGen(this.interp.callFn(fn));
+        if (!req.resp)
+          req.resp = ok
+            ? { status: 200, body: '' } // handler forgot to send: empty 200
+            : { status: 404, body: 'File not found:' };
+      } finally {
+        obj.active = null;
+      }
+      return { value: 1 };
+    }
+    case 'send': {
+      const active = obj.active;
+      if (active) active.resp = { status: num(args[0]), body: str(args[2]) };
+      return { value: 0 };
+    }
+    case 'sendContent': {
+      const active = obj.active;
+      if (active?.resp) active.resp.body += str(args[0]);
+      return { value: 0 };
+    }
+    case 'sendHeader': case 'send_P': case 'sendContent_P': case 'streamFile':
+    case 'sendChunked_start': case 'sendChunked_write': case 'sendChunked_end':
+      return { value: 0 };
+    case 'uri': return { value: obj.active?.uri ?? '' };
+    case 'method':
+      return { value: obj.active ? (obj.active.method === 'GET' ? 'GET' : 'POST') : '' };
+    case 'methodString': return { value: obj.active ? (obj.active.method ?? 'GET') : '' };
+    case 'hostHeader': return { value: `${this.ip}:${obj.port}` };
+    case 'args': return { value: obj.active?.args.length ?? 0 };
+    case 'argName': return { value: obj.active?.args[num(args[0])]?.[0] ?? '' };
+    case 'hasArg':
+      return { value: obj.active?.args.some(([k]) => k === str(args[0])) ? 1 : 0 };
+    case 'arg': {
+      // Arduino overloads: arg(name) searches, arg(index) reads positionally
+      if (obj.active && typeof args[0] === 'number')
+        return { value: obj.active.args[num(args[0])]?.[1] ?? '' };
+      const pair = obj.active?.args.find(([k]) => k === str(args[0]));
+      return { value: pair ? pair[1] : '' };
+    }
+    case 'collectHeaders': case 'handleReset': case 'close': case 'closeCurrentConnection':
+    case 'forceClose': case 'processExit': case 'enableCORS': case 'enableCacheControl':
+    case 'enableTwoWire': case 'setContentLength': case 'ignoreAllOptions':
+    case 'setContentFreeRAM':
+      return { value: 0 };
+    case 'hasClient': return { value: this.httpInbox.length > 0 ? 1 : 0 };
+    default:
+      throw new Error(`'ESP8266WebServer' has no method '${meth}'`);
+  }
+}
+
+/**
+ * HTTPClient: begin(url)/begin(client, url)/begin(client, host, port, path),
+ * GET()/POST(body), GET-returns -1 for unknown peers (that is what makes
+ * the v20 peer_cmd retry loop testable), getString/end.
+ */
+private httpCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
+  const num = (v: HostValue | undefined): number => (typeof v === 'number' ? v : Number(v ?? 0));
+  const str = (v: HostValue | undefined): string => (typeof v === 'string' ? v : String(v ?? ''));
+  switch (meth) {
+    case 'begin': {
+      // begin(url) | begin(client, url) | begin(client, host, port[, path])
+      let url = '';
+      if (args.length === 1) url = str(args[0]);
+      else if (args.length === 2) url = str(args[1]);
+      else if (args.length >= 3) {
+        const path = args.length >= 4 ? str(args[3]) : '/';
+        url = `http://${str(args[1])}:${num(args[2])}${path}`;
+      }
+      const parts = parseUrl(url);
+      obj.url = parts;
+      obj.resp = null;
+      obj.outBody = '';
+      if (obj.timeoutMs === undefined) obj.timeoutMs = 5000;
+      return { value: parts ? 1 : 0 };
+    }
+    case 'setTimeout': case 'setConnectTimeout':
+      obj.timeoutMs = num(args[0]);
+      return { value: 0 };
+    case 'print': case 'println':
+      obj.outBody = (obj.outBody ?? '') + str(args[0]);
+      return { value: 0 };
+    case 'GET': case 'POST': case 'PUT': case 'PATCH': case 'DELETE': {
+      const method: 'GET' | 'POST' = meth === 'GET' ? 'GET' : 'POST';
+      const url = obj.url;
+      if (!url) return { value: -1 };
+      const body = args.length ? str(args[0]) : meth === 'POST' ? obj.outBody ?? '' : '';
+      const req: HttpReq = {
+        method,
+        uri: url.uri,
+        args: [...url.args, ...(method === 'GET' ? [] : parseForm(body))],
+        body,
+      };
+      const target = lan.route(url.ip);
+      // no route, or fetching our own machine (our loop is busy inside GET;
+      // the emulator does not buffer self-connections) -> connection failed
+      if (!target || (target as unknown) === this) {
+        obj.resp = null;
+        obj.lastError = -1;
+        return { value: -1 };
+      }
+      target.deliver(req);
+      const deadline = obj.timeoutMs ?? 5000;
+      for (let waited = 0; waited < deadline && !req.resp; waited++) target.pump(1);
+      if (!req.resp) {
+        obj.resp = null;
+        obj.lastError = -1;
+        return { value: -1 };
+      }
+      obj.resp = req.resp;
+      return { value: req.resp.status };
+    }
+    case 'getString': {
+      const body = obj.resp?.body ?? '';
+      return { value: body };
+    }
+    case 'getSize': return { value: (obj.resp?.body ?? '').length };
+    case 'getStream': return { value: obj.resp?.body ?? '' };
+    case 'end':
+      obj.url = null;
+      obj.resp = null;
+      obj.outBody = '';
+      return { value: 0 };
+    case 'setReuse': case 'setAuthorization': case 'addHeader': case 'setFollowRedirects':
+    case 'setDNS': case 'useHTTP11': case 'setCTimeout': case 'setLedOff': case 'setLedOn':
+    case 'setConnectionTimeout': case 'setConnectTimeout': case 'setReuse':
+      return { value: 0 };
+    default:
+      throw new Error(`'HTTPClient' has no method '${meth}'`);
+  }
+}
+
+/** Run a callback generator to completion without touching the clock. */
+private drainGen(gen: SketchGen): void {
+  let steps = 0;
+  let r = gen.next();
+  while (!r.done) {
+    if (r.value.kind === 'delay') {
+      r = gen.next(undefined); // delay() inside an HTTP handler is ignored
+      continue;
+    }
+    if (++steps >= 200_000) {
+      gen.return(undefined);
+      throw new Error('HTTP handler does not terminate');
+    }
+    r = gen.next(undefined);
+  }
+}
+
+/**
+ * The GUI "HTTP" panel's entry point: one request to this machine, served
+ * the honest way - the sketch must reach handleClient() on its own, so we
+ * pump virtual time until the queue empties into a response.
+ */
+fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
+  if (this.machinePhase !== 'running') return null;
+  const parts = parseUrl(url);
+  if (!parts || parts.ip !== this.ip) return null;
+  const req: HttpReq = {
+    method,
+    uri: parts.uri,
+    args: [...parts.args, ...(method === 'GET' ? [] : parseForm(body))],
+    body,
+  };
+  this.httpInbox.push(req);
+  for (let waited = 0; waited < 2000 && !req.resp; waited++) this.advance(1);
+  return req.resp ?? null;
+}
+
   private wifiCall(
     obj: { kind: string; port: number; peer: string | null; listening: boolean },
     meth: string,
@@ -558,6 +793,7 @@ private ipCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
     this.isrQueue = [];
     this.attachments.clear();
     this.isrPrev.clear();
+    this.httpInbox = [];
   }
 
   // ---------- registers ----------
@@ -650,6 +886,7 @@ private ipCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
       WL_CONNECTED: 3, WL_CONNECT_FAILED: 4, WL_CONNECTION_LOST: 5, WL_DISCONNECTED: 6,
       WIFI_STA: 1, WIFI_AP: 2, WIFI_AP_STA: 3,
       A0: 17, // ESP8266 Arduino core: analogRead() uses pin 17
+      HTTP_ANY: 7, HTTP_GET: 1, HTTP_HEAD: 4, HTTP_POST: 2, HTTP_PATCH: 64, HTTP_PUT: 8,
       NEO_KHZ400: 0x100, NEO_KHZ800: 0x800,
       NEO_GRB: 0x00, NEO_RGB: 0x08, NEO_BRG: 0x10, NEO_RBG: 0x18, NEO_BGR: 0x20,
     };
@@ -1010,7 +1247,7 @@ private ipCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
             return { value: c !== null && this.clock.now() >= c ? 3 /* WL_CONNECTED */ : 6 };
           }
           case 'WiFi.localIP':
-            return { value: this.wifi.connectAt !== null && this.clock.now() >= this.wifi.connectAt ? '192.168.1.42' : '0.0.0.0' };
+            return { value: this.wifi.connectAt !== null && this.clock.now() >= this.wifi.connectAt ? this.ip : '0.0.0.0' };
           case 'WiFi.softAPIP': return { value: '192.168.4.1' };
           case 'WiFi.macAddress': return { value: '18:fe:20:1c:b4:3a' };
           case 'WiFi.RSSI': return { value: -55 };
@@ -1025,6 +1262,8 @@ private ipCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
               const meth = name.slice(dot + 1);
               if (obj.kind === 'Adafruit_NeoPixel') return this.npCall(obj, meth, args);
               if (obj.kind === 'IPAddress') return this.ipCall(obj, meth, args);
+              if (obj.kind === 'ESP8266WebServer') return this.webCall(obj, meth, args);
+              if (obj.kind === 'HTTPClient') return this.httpCall(obj, meth, args);
               return this.wifiCall(obj, meth, args);
             }
             throw new Error(`function '${name}' is not implemented on the emulated ESP8266`);
