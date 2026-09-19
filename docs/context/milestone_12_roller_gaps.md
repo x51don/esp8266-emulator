@@ -1,6 +1,6 @@
 # Milestone 12 - luki pod szkic "roller shutter v20"
 
-Start serii F1..F5 (patrz `gap_roller_shutter_v20.md`).每 element TDD:
+Start serii F1..F5 (patrz `gap_roller_shutter_v20.md`).Kazdy element TDD:
 test RED -> implementacja -> GREEN -> pełna suita.
 
 ## F1 - preprocesor: warunki i #define (done)
