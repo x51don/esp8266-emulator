@@ -273,6 +273,7 @@ export class Esp8266Machine implements LanHost {
     this.registers.reset();
     this.gpio.reset();
     this.pinStress.clear(); // fresh electrical conditions (damage persists)
+    this.netlist.resetTime(); // pending button chatter dies with the run
     this.serialLog = [];
     this.alarms.clear();
     this.wifi.connectAt = null;
@@ -326,6 +327,7 @@ export class Esp8266Machine implements LanHost {
     this.registers.reset();
     this.gpio.reset();
     this.pinStress.clear();
+    this.netlist.resetTime();
     this.alarms.clear();
     this.serialLog = [];
     this.printBuf = '';
@@ -1238,6 +1240,9 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
             return { value: args.length ? printValue(args[0]) : '' };
           case 'digitalRead':
             return { value: this.gpio.read(num(args[0])) };
+          case 'digitalPinToInterrupt':
+            // identity on the ESP8266 core (any GPIO can interrupt)
+            return { value: num(args[0]) };
           case 'analogWrite':
             this.gpio.analogWrite(num(args[0]), num(args[1]));
             return { value: 0 };

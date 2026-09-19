@@ -14,7 +14,17 @@ type Field =
 
 const FIELDS: Record<string, Field[]> = {
   resistor: [{ key: 'resistance', label: 'Resistance', unit: 'ohm', kind: 'num', step: 10 }],
-  led: [{ key: 'forwardV', label: 'Forward voltage', unit: 'V', kind: 'num', step: 0.1 }],
+  led: [
+    {
+      key: 'color', label: 'Colour', kind: 'select',
+      options: [
+        { value: 'red', label: 'Red (1.8 V)' }, { value: 'orange', label: 'Orange (1.9 V)' },
+        { value: 'yellow', label: 'Yellow (2.0 V)' }, { value: 'green', label: 'Green (2.1 V)' },
+        { value: 'blue', label: 'Blue (3.0 V)' }, { value: 'white', label: 'White (3.1 V)' },
+      ],
+    },
+    { key: 'forwardV', label: 'Forward voltage (overrides colour)', unit: 'V', kind: 'num', step: 0.1 },
+  ],
   diode: [],
   zener: [{ key: 'vz', label: 'Breakdown voltage Vz', unit: 'V', kind: 'num', step: 0.1 }],
   transistor: [
@@ -27,7 +37,7 @@ const FIELDS: Record<string, Field[]> = {
   battery: [{ key: 'volts', label: 'Voltage', unit: 'V', kind: 'num', step: 0.5 }],
   cap: [{ key: 'uf', label: 'Capacitance', unit: 'uF', kind: 'num', step: 10 }],
   buzzer: [],
-  button: [],
+  button: [{ key: 'bounce', label: 'Contact bounce window', unit: 'ms', kind: 'num', step: 0.5 }],
   pot: [{ key: 'ratio', label: 'Wiper position', unit: '0..1', kind: 'num', step: 0.01 }],
   ldr: [{ key: 'lux', label: 'Light level', unit: 'lx', kind: 'num', step: 10 }],
   dht: [

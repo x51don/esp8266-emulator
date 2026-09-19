@@ -141,15 +141,23 @@ idealny (oczekują dokładnie 1 zbocza na naciśnięcie).
 
 **Plan.** Vf: tabela per kolor (`color` parametr: red 1.8, green 2.1,
 blue/white 3.0, yellow 2.0) gdy brak jawnego forwardV. Drganie: parametr
-`bounce` ms (domyślnie 6); model deterministyczny - zmiana stanu przełącznika
-inicjuje sekwencje drgan (~4 odbicia, malejace okna czasowe) liczona wedlug
-czasu wirtualnego; `advanceTime` wykrywa przejscia drgan i podbija `version`
- cached resolve musi widziec drganie). Przyciski z `bounce: 0`
-pozostaja idealne - dotychczasowe testy przerwania aktualizujemy do
-`bounce: 0` z komentarzem (na sprzadziu samo zbocze bez debounce to wlasnie
-drganie - nowy test to udowadnia).
+`bounce` ms; model deterministyczny - zmiana stanu przycisku inicjuje okno
+drgan liczone według czasu wirtualnego; `advanceTime` wykrywa przejścia
+i podbija `version` (cached resolve musi widzieć drganie).
 
-**Status.** TODO
+**Status.** DONE 2026-09-19. Netlist: `VF_BY_COLOR` (red 1.8, orange 1.9,
+yellow 2.0, green 2.1, amber 2.0, blue 3.0, white 3.1, ir 1.4), jawny
+`forwardV` wygrywa; `color` w ComponentDialog + tint świecenia w rendererze.
+Drganie: `chatter` per przycisk {target, from, lenUs, startUs}, segmenty
+[make .25 | break .25 | make .2 | break .3] × bounce, stabilizacja po oknie;
+`advanceTime(dtUs)` prowadzi `nowUs`, podbija `version` na każdym zboczu
+styku; `resetTime()` (run/reset maszyny) kasuje okna. Domyślne `bounce`:
+przycisk z palety/GUI 1 ms, przyciski autowire 1 ms, komponenty bez parametru
+0 (testy historyczne zostają idealne - świadoma decyzja, nie luka).
+Udokumentowane scalanie: zbocza w obrębie jednego `advance()` dają jedno
+wejście ISR (jak zajęty MCU gubiący impulsy z rzędu). Przy okazji:
+zaimplementowany `digitalPinToInterrupt()` (tożsamościowy na ESP8266).
+Testy: `tests/debounce.test.ts` (8).
 
 ---
 
@@ -316,3 +324,4 @@ trasowania w LAN).
 - (start) audyt wykonany, plik utworzony, nic nie zmienione w kodzie.
 - 2026-09-19 | F1.1 boot straps | tests/bootmode.test.ts 8x red -> green; suite 493/493 | przy okazji usunięty duplikat `case 'setReuse'` (warning esbuild).
 - 2026-09-19 | F1.2 limity prądowe + palenie pinu | tests/electrical.test.ts 6x red -> green; suite 499/499 | model termiczny: 1 s przeciążenia = pad martwy; over-volt 5V drutem = natychmiast.
+- 2026-09-19 | F1.3 Vf diody + drganie styków | tests/debounce.test.ts 8x red -> green; suite 507/507 | bounce oknem czasu wirtualnego (determ.); zbocza w jednym advance scalą się do 1 ISR; +digitalPinToInterrupt.

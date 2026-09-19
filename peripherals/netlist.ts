@@ -78,6 +78,11 @@ const PULLUP_R = 30_000;
 /** Output resistance of a UI "force" editor (P3.1). */
 const FORCE_R = 10_000;
 const VF_DEFAULT = 2;
+/** F1.3: typical forward voltage by LED die colour (datasheet medians). */
+const VF_BY_COLOR: Record<string, number> = {
+  red: 1.8, orange: 1.9, yellow: 2.0, green: 2.1, amber: 2.0,
+  blue: 3.0, white: 3.1, rgb: 2.0, ir: 1.4,
+};
 const ON_MA = 0.05;
 const BURN_MA = 50;
 /** Series resistance of a conducting diode / saturated transistor link. */
@@ -96,6 +101,10 @@ export class Netlist {
   private comps = new Map<string, ComponentDef>();
   private wires = new Map<string, Wire>();
   private switches = new Map<string, boolean>();
+  /** F1.3: virtual-time base (µs) for button chatter, fed by advanceTime. */
+  private nowUs = 0;
+  /** F1.3: active contact-bounce windows per button. */
+  private chatter = new Map<string, { target: boolean; from: boolean; lenUs: number; startUs: number }>();
   private wireSeq = 0;
   /** P3.4: voltage across each capacitor plate pair (p1 referenced to p2). */
   private capV = new Map<string, number>();
@@ -129,6 +138,25 @@ export class Netlist {
    */
   advanceTime(dtUs: number): void {
     if (dtUs <= 0) return;
+    // F1.3: flip buttons in and out of their chatter windows; a contact that
+    // changed inside this slice invalidates the cached solve, so the next
+    // resolve (and the interrupt edge check) sees the new contact state.
+    if (this.chatter.size) {
+      const was = new Map<string, boolean>();
+      for (const [id, c] of this.chatter) was.set(id, Netlist.chatterClosed(c, this.nowUs));
+      this.nowUs += dtUs;
+      for (const [id, c] of [...this.chatter]) {
+        if (this.nowUs - c.startUs >= c.lenUs) {
+          this.chatter.delete(id);
+          this.switches.set(id, c.target);
+          this.version++;
+        } else if (Netlist.chatterClosed(c, this.nowUs) !== was.get(id)) {
+          this.version++;
+        }
+      }
+    } else {
+      this.nowUs += dtUs;
+    }
     for (const c of this.comps.values()) {
       if (c.type !== 'cap') continue;
       const uf = Number(c.params.uf ?? 100);
@@ -207,13 +235,53 @@ export class Netlist {
   }
 
   setSwitchState(compId: string, closed: boolean): void {
-    if (this.switches.get(compId) === closed) return; // electrical no-op
+    const wasLogical = this.switches.get(compId);
+    const from = this.isSwitchClosed(compId); // electrical state incl. chatter
+    if (wasLogical === closed && !this.chatter.has(compId)) return; // no-op
     this.switches.set(compId, closed);
+    const comp = this.comps.get(compId);
+    const bounceMs = comp?.type === 'button' ? Number(comp.params.bounce ?? 0) : 0;
+    this.chatter.delete(compId);
+    if (bounceMs > 0 && from !== closed) {
+      // F1.3: real contacts make, bounce, and settle - one press is a burst
+      // of edges over the bounce window, not a single clean transition.
+      this.chatter.set(compId, { target: closed, from, lenUs: bounceMs * 1000, startUs: this.nowUs });
+    }
     this.version++;
   }
 
   isSwitchClosed(compId: string): boolean {
-    return this.switches.get(compId) ?? false;
+    const c = this.chatter.get(compId);
+    if (!c) return this.switches.get(compId) ?? false;
+    if (this.nowUs - c.startUs >= c.lenUs) {
+      this.chatter.delete(compId); // settled: latch the final state
+      this.switches.set(compId, c.target);
+      return c.target;
+    }
+    return Netlist.chatterClosed(c, this.nowUs);
+  }
+
+  /** Contact state inside a bounce window (make/break/make/break/make). */
+  private static chatterClosed(c: { target: boolean; from: boolean; lenUs: number; startUs: number }, tUs: number): boolean {
+    const p = (tUs - c.startUs) / c.lenUs;
+    if (p >= 1) return c.target;
+    if (p < 0) return c.from;
+    if (p < 0.25) return c.target; // first make
+    if (p < 0.5) return c.from;    // bounce open
+    if (p < 0.7) return c.target;  // second make
+    return c.from;                 // final gap before it stays made
+  }
+
+  /** Chip reset: pending chatter dies with the run; time reference restarts. */
+  resetTime(): void {
+    this.nowUs = 0;
+    if (this.chatter.size) {
+      for (const [id, c] of this.chatter) {
+        this.switches.set(id, c.target);
+        this.chatter.delete(id);
+      }
+      this.version++;
+    }
   }
 
   /** 0-ohm connectivity root for a terminal (wire coloring). Cheap DSU. */
@@ -433,7 +501,9 @@ export class Netlist {
     // --- LED currents ---
     for (const c of this.comps.values()) {
       if (c.type !== 'led') continue;
-      const vf = Number(c.params.forwardV ?? VF_DEFAULT);
+      const vf = Number(
+        c.params.forwardV ?? VF_BY_COLOR[String(c.params.color ?? '').toLowerCase()] ?? VF_DEFAULT,
+      );
       const src = this.bestSource(term(c.id, 'a'));
       const snk = this.bestSink(term(c.id, 'k'));
       let state: LedState = { on: false, burnt: false, currentMa: 0, brightness: 0 };

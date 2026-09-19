@@ -67,7 +67,7 @@ export function addLedChain(sc: Schematic, pin: string): void {
 export function addButton(sc: Schematic, pin: string): void {
   const board = sc.boardComponent()!;
   const p = pinWorld(sc, pin);
-  const b = sc.add('button', p.x + p.dir * 160, p.y, {});
+  const b = sc.add('button', p.x + p.dir * 160, p.y, { bounce: 1 });
   wire(sc, { comp: board.id, pin }, { comp: b.id, pin: 'p1' });
   wire(sc, { comp: b.id, pin: 'p2' }, { comp: board.id, pin: 'GND' });
 }

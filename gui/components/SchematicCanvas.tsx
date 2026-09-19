@@ -527,9 +527,9 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
     const world = vpRef.current.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
     const snapped = snapToGrid(world, 10);
     const defaults: Record<string, Record<string, unknown>> = {
-      led: { resistance: 220, forwardV: 2, color: 'amber' },
+      led: { resistance: 220, color: 'red' },
       resistor: { resistance: 220 },
-      button: {},
+      button: { bounce: 1 },
       buzzer: {},
       battery: { volts: 9 },
       diode: { forwardV: 0.7 },
@@ -560,7 +560,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
       if (type === 'led') {
         // LED ships with a series resistor baked into the symbol params;
         // the netlist models the LED itself, so drop a resistor beside it.
-        schematic.add(type, snapped.x, snapped.y, { forwardV: params.forwardV });
+        schematic.add(type, snapped.x, snapped.y, { forwardV: params.forwardV, color: params.color });
         const r = schematic.add('resistor', snapped.x - 40, snapped.y, { resistance: params.resistance });
         const last = [...schematic.components.keys()].at(-1)!;
         schematic.wire({ comp: last, pin: 'k' }, { comp: r.id, pin: 'p2' });

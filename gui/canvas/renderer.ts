@@ -818,11 +818,17 @@ function drawLed(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedCompone
   const r = Math.max(6, len * 0.22);
   const cx = len / 2;
 
+  // F1.3: glow tint follows the die colour the solver uses for Vf
+  const GLOW: Record<string, string> = {
+    red: '255,80,80', orange: '255,140,50', yellow: '255,210,60',
+    green: '80,230,110', blue: '90,130,255', white: '235,240,255',
+  };
+
   if (on && !burnt) {
     const glow = ctx.createRadialGradient(cx, 0, 1, cx, 0, r * 4);
-    const color = c.params.color === 'red' ? '255,80,80' : '255,180,60';
+    const color = GLOW[String(c.params.color ?? '')] ?? '255,180,60';
     glow.addColorStop(0, `rgba(${color},${0.55 * bright + 0.15})`);
-    glow.addColorStop(1, 'rgba(255,180,60,0)');
+    glow.addColorStop(1, `rgba(${color},0)`);
     ctx.fillStyle = glow;
     ctx.beginPath();
     ctx.arc(cx, 0, r * 4, 0, Math.PI * 2);
