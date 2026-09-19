@@ -92,6 +92,10 @@ export function App() {
   const [bottomTab, setBottomTab] = useState<'serial' | 'http'>('serial');
   /** F6: EEPROM contents to plant into the next machine (project load) */
   const pendingEeprom = useRef<Uint8Array | null>(null);
+  /** F11: per-device flashes to plant at creation (project load, ids are fresh) */
+  const pendingSeed = useRef(new Map<number, Uint8Array>());
+  /** F11: named project the bench is autosaved into (null: nothing to autosave) */
+  const openProject = useRef<string | null>(null);
   // ---- F10: devices (each one machine on the LAN, own sketch) ----
   const [devices, setDevices] = useState<Device[]>(() => [makeDevice()]);
   const [activeId, setActiveId] = useState(1);
@@ -101,6 +105,8 @@ export function App() {
   const sketchesRef = useRef(new Map<number, string>());
   const sketchRef = useRef(sketch);
   sketchRef.current = sketch;
+  const devicesState = useRef(devices);
+  devicesState.current = devices;
 
   // adopt the placeholder machine as device #1 (declared BEFORE the sync
   // effect so it runs first on mount; its sketch is the restored editor text)
@@ -127,9 +133,15 @@ export function App() {
     }
     if (!m) {
       m = new Esp8266Machine({ board: boardId, ip: dev.ip });
-      // project load wins; a fresh device starts from an erased chip
-      m.eepromRestore(pendingEeprom.current ?? new Uint8Array(0));
-      pendingEeprom.current = null;
+      // project flash wins, then a planted one (new project), else erased chip
+      const seed = pendingSeed.current.get(dev.id);
+      if (seed !== undefined) {
+        pendingSeed.current.delete(dev.id);
+        m.eepromRestore(seed);
+      } else {
+        m.eepromRestore(pendingEeprom.current ?? new Uint8Array(0));
+        pendingEeprom.current = null;
+      }
       machineBoard.current.set(dev.id, boardId);
       m.onSerial((line) => {
         if (activeRef.current === dev.id)
@@ -222,16 +234,29 @@ export function App() {
   }, [machine, persist, schematic]);
 
   /** Replace the whole document (example / project / import). */
-  const applyDoc = useCallback((next: Schematic, nextSketch?: string) => {
+  const applyDoc = useCallback((next: Schematic, nextSketch?: string, data?: ProjectData) => {
     safeStore(LS.schematic, next.toJSON());
     if (nextSketch !== undefined) safeStore(LS.sketch, nextSketch);
-    // a whole-doc swap retires every device; the project owns one primary
+    // a whole-doc swap retires every device; the project owns the bench again
     for (const m of machinesRef.current.values()) m.dispose();
     machinesRef.current.clear();
     machineBoard.current.clear();
     sketchesRef.current.clear();
+    pendingSeed.current.clear();
     deviceSeq = 0;
-    setDevices([makeDevice()]);
+    const list: Device[] = [];
+    if (data?.devices?.length) {
+      for (const dd of data.devices) {
+        const dev = makeDevice();
+        if (dd.name) dev.name = dd.name; // keep the label, regenerate the lease
+        list.push(dev);
+        sketchesRef.current.set(dev.id, dd.sketch);
+        if (dd.eeprom !== undefined) pendingSeed.current.set(dev.id, eepromFromB64(dd.eeprom));
+      }
+    } else {
+      list.push(makeDevice());
+    }
+    setDevices(list);
     setActiveId(1);
     activeRef.current = 1;
     setSchematic(next);
@@ -250,6 +275,7 @@ export function App() {
       )
     )
       return;
+    openProject.current = null; // an example must not autosave into the project
     // a preset hardwires pins; a board that lacks one must not silently die
     try {
       applyDoc(loadExample(name, boardId), src);
@@ -266,12 +292,21 @@ export function App() {
       schematic: schematic.toJSON(),
       board: boardId,
       eeprom: eepromToB64(machine.eepromBytes()),
+      devices: devices.map((d) => {
+        const m = machinesRef.current.get(d.id);
+        return {
+          name: d.name,
+          sketch: sketchesRef.current.get(d.id) ?? sketch,
+          eeprom: m ? eepromToB64(m.eepromBytes()) : undefined,
+        };
+      }),
     }),
-    [sketch, schematic, boardId, machine],
+    [sketch, schematic, boardId, machine, devices],
   );
 
   const onNewProject = useCallback(() => {
     if (!confirmOr('Start a new project? The current sketch and circuit are replaced.')) return;
+    openProject.current = null;
     pendingEeprom.current = new Uint8Array(4096).fill(0xff);
     const fresh = new Schematic();
     fresh.addBoard(boardId, 160, 60);
@@ -283,6 +318,7 @@ export function App() {
     if (!name || !name.trim()) return;
     try {
       store.save({ ...currentProject(), name: name.trim() });
+      openProject.current = name.trim();
       setProjects(store.list());
     } catch (e) {
       setError(
@@ -302,13 +338,50 @@ export function App() {
     }
     if (!confirmOr(`Replace the current sketch and circuit with project "${name}"?`)) return;
     try {
-      pendingEeprom.current = eepromFromB64(data.eeprom);
-      applyDoc(Schematic.fromJSON(data.schematic), data.sketch);
+      // legacy single-device projects seed the primary chip; F11 projects
+      // carry a flash image per device inside `devices`
+      if (!data.devices?.length) pendingEeprom.current = eepromFromB64(data.eeprom);
+      applyDoc(
+        Schematic.fromJSON(data.schematic),
+        data.devices?.[0]?.sketch ?? data.sketch,
+        data,
+      );
       setBoardId(data.board);
+      openProject.current = name;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [store, applyDoc]);
+
+  // ---- F11: a committed EEPROM page autosaves the open project (no prompt) ----
+  const currentProjectRef = useRef(currentProject);
+  currentProjectRef.current = currentProject;
+  // the baseline lives outside the effect: a commit during setup() of the
+  // very run that set `running` must not be swallowed by a fresh baseline
+  const lastEepromDirty = useRef(0);
+  const allEepromDirty = () => {
+    let d = 0;
+    for (const m of machinesRef.current.values()) d += m.eepromDirty;
+    return d;
+  };
+  useEffect(() => {
+    if (!running) return;
+    let last = lastEepromDirty.current;
+    const iv = window.setInterval(() => {
+      const d = allEepromDirty();
+      if (d === last) return;
+      last = d;
+      lastEepromDirty.current = d;
+      const name = openProject.current;
+      if (!name) return;
+      try {
+        store.save({ ...currentProjectRef.current(), name });
+      } catch {
+        /* storage full: the next manual Save shows the banner */
+      }
+    }, 1000);
+    return () => window.clearInterval(iv);
+  }, [running, store]);
 
   const onProjectDelete = useCallback((name: string) => {
     if (!confirmOr(`Delete project "${name}"?`)) return;
@@ -338,9 +411,14 @@ export function App() {
         if (!confirmOr(`Import "${data.name || file.name}"? It replaces the current sketch and circuit.`))
           return;
         try {
-          pendingEeprom.current = eepromFromB64(data.eeprom);
-          applyDoc(Schematic.fromJSON(data.schematic), data.sketch);
+          if (!data.devices?.length) pendingEeprom.current = eepromFromB64(data.eeprom);
+          applyDoc(
+            Schematic.fromJSON(data.schematic),
+            data.devices?.[0]?.sketch ?? data.sketch,
+            data,
+          );
           setBoardId(data.board);
+          openProject.current = null; // an import is not a storage slot
         } catch (e) {
           setError(e instanceof Error ? e.message : String(e));
         }
@@ -402,10 +480,12 @@ export function App() {
         return canvasApi.current?.viewport;
       },
       setSketch,
-      devices: () => [...machinesRef.current.keys()].map((id) => {
-        const m = machinesRef.current.get(id)!;
-        return { id, ip: m.ip, phase: m.phase() };
-      }),
+      // the bench from state; a device gets its machine at first activation
+      devices: () =>
+        devicesState.current.map((d) => {
+          const m = machinesRef.current.get(d.id);
+          return { id: d.id, name: d.name, ip: m?.ip ?? d.ip, phase: m?.phase() ?? 'unbuilt' };
+        }),
       addDevice: onAddDevice,
       switchDevice,
       routeWire,

@@ -10,6 +10,15 @@ export interface ProjectData {
   schematic: string; // Schematic.toJSON() text
   board: string;
   eeprom?: string; // base64 of the 4096-byte flash sector (F6)
+  /** F11: the rest of the LAN bench; index 0 is the primary device
+   *  (whose sketch/eeprom also live in the top-level fields). */
+  devices?: DeviceData[];
+}
+
+export interface DeviceData {
+  name: string;
+  sketch: string;
+  eeprom?: string;
 }
 
 export function eepromToB64(bytes: Uint8Array): string {
@@ -68,7 +77,7 @@ export class ProjectStore {
     if (!raw) return null;
     try {
       const p = JSON.parse(raw) as ProjectData;
-      return valid(p) ? { ...p, name } : null;
+      return valid(p) ? sanitize({ ...p, name }) : null;
     } catch {
       return null;
     }
@@ -91,8 +100,22 @@ export class ProjectStore {
       throw new Error('not a JSON file');
     }
     if (!valid(p)) throw new Error('not an ESP8266-emu project file');
-    return p;
+    return sanitize(p);
   }
+}
+
+/** F11: drop hand-edited junk out of the devices array */
+function sanitize(p: ProjectData): ProjectData {
+  if (p.devices === undefined) return p;
+  if (!Array.isArray(p.devices)) {
+    const { devices, ...rest } = p;
+    return rest as ProjectData;
+  }
+  const ok = (p.devices as unknown[]).filter(
+    (d): d is DeviceData =>
+      !!d && typeof d === 'object' && typeof (d as DeviceData).sketch === 'string',
+  );
+  return { ...p, devices: ok.map((d) => ({ name: d.name ?? '', sketch: d.sketch, eeprom: d.eeprom })) };
 }
 
 function valid(p: ProjectData): boolean {

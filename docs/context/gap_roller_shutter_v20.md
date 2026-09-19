@@ -152,3 +152,13 @@ stalem odpowiada od razu. Milestone 18, E2E verify8 ALL OK.
 Pozostalo z listy "co brakuje": `WiFi.onEvent` (brak stacji w
 emulatorze - bez uzasadnienia), WiFiEvent_t (j.w.), HTTPS/WebSocket
 (poza zasiegiem).
+
+## F11 - lawa urzadzen w projekcie + autosave flasha (ZROBIONE)
+
+`ProjectData.devices` (szkic + EEPROM per urzadzenie, wstecz
+kompatybilne), autosave otwartego projektu przy kazdym commitcie
+strony EEPROM, przyklad/nowy projekt/import nie zapisuja po cichu.
+Milestone 19, E2E verify9 ALL OK.
+
+Z listy zostaja tylko pozycje bez uzasadnienia w emulatorze
+(`WiFi.onEvent` - brak stacji WiFi; HTTPS/WebSockets - poza zasiegiem).

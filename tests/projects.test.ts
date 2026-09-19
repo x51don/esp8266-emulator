@@ -88,6 +88,29 @@ describe('EEPROM field (F6)', () => {
     expect(store.load('lab-4')?.eeprom).toBe(b64);
   });
 
+  it('F11: per-device sketches and flashes round-trip', () => {
+    const store = new ProjectStore(new FakeStorage());
+    store.save({
+      ...sample,
+      devices: [
+        { name: 'esp-1', sketch: 'void setup(){}', eeprom: 'AAAA' },
+        { name: 'esp-2', sketch: 'void loop(){}', eeprom: 'Ag==' },
+      ],
+    });
+    const back = store.load('lab-4');
+    expect(back?.devices?.map((d) => d.sketch)).toEqual(['void setup(){}', 'void loop(){}']);
+    expect(back?.devices?.[1]?.eeprom).toBe('Ag==');
+    expect(store.parseImport(store.exportJson(back!)).devices?.[0]?.name).toBe('esp-1');
+  });
+
+  it('F11: junk in devices is dropped, legacy shape stays valid', () => {
+    const store = new ProjectStore(new FakeStorage());
+    store.save({ ...sample, devices: [{ sketch: 42 }, { name: 'x', sketch: 'ok' }] } as never);
+    expect(store.load('lab-4')?.devices).toEqual([{ name: 'x', sketch: 'ok' }]);
+    store.save(sample); // no devices at all
+    expect(store.load('lab-4')?.devices).toBeUndefined();
+  });
+
   it('legacy projects without the field load as an erased chip', () => {
     const store = new ProjectStore(new FakeStorage());
     store.save(sample);
