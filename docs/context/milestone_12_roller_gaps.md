@@ -141,8 +141,51 @@ clear+brightness, getPixelColor (packing Adafruita), brak paska =
 ciche ignorowanie, wzorzec lampy v20 przez funkcję z parametrami
 `uint8_t`. 391/391.
 
-## F5 - wirtualny LAN + WebServer + HTTPClient + panel HTTP (pending)
+## F5 - wirtualny LAN + WebServer + HTTPClient + panel (done)
 
-Kolejka żądań per `ESP8266WebServer`, dispatch handlerów-szkicu w
-`handleClient()`, `HTTPClient.GET` z timeoutem wirtualnym, dok HTTP w
-GUI. Największa pozycja; dopiero po niej szkic jest w pełni interaktywny.
+`core/lan.ts` (nowy): rejestr `lan` (IP -> host), `HttpReq/HttpResp`,
+`parseUrl` (tylko adresy IPv4 - brak DNS na wirtualnym LAN),
+`parseForm`. Host = maszyna (`implements LanHost`): `deliver()` rzuca
+żądanie do skrzynki, `pump(ms)` = jej `advance(ms)`.
+
+`core/machine.ts`:
+
+- `ESP8266WebServer` (`webCall`): `on(path[, HTTP_GET|HTTP_POST], fn)`
+  (lambda = nazwa `__lambda_N`), `onNotFound`, `begin` (register w
+  `lan`), `handleClient` obsługuje **jedno** żądanie z kolejki na
+  wywołanie - jak biblioteka; handler odpala się przez `drainGen`
+  (handler nie może używać `delay()` - dokumentowane uproszczenie).
+  `send/sendContent/uri/method/methodString/args/arg(name|idx)/
+  argName/hasArg/hostHeader`; brak trasy bez `onNotFound` = 404
+  `File not found:`; stałe `HTTP_GET/POST/ANY/...`.
+- `HTTPClient` (`httpCall`): `begin(url)`, `begin(client,url)`,
+  `begin(client,host,port[,path])`, `GET/POST/PUT/PATCH/DELETE`,
+  `getString/getSize/end/setTimeout/print`. Żądanie leci do docelowej
+  maszyny i **pompuje jej czas** do odpowiedzi lub timeoutu - peer
+  musi sam dojść do `handleClient()`. Brak trasy / własny adres =
+  `-1` (środkowe `http.GET()` nie może pompować własnej pętli) -
+  pętla retry typu `peer_cmd` kończy się po limitcie prób.
+- `fetchHttp(method, url[, body])` - wejście panelu GUI: żądanie do
+  własnej maszyny + pompowanie `advance(1)` aż szkic obsłuży kolejkę
+  (max 2000 ms wirtualnych, null = brak odpowiedzi).
+- `dispose()`/`ip` (konstruktor `{ board, ip? }`, domyślnie
+  192.168.1.42 = `WiFi.localIP()`), `machinePhase != running` =
+  `fetchHttp` zwraca null.
+
+`core/sketch/parser.ts` + `interp.ts`: łańcuchowe wywołania
+`server.arg("v").toInt()` - `Call.recv` (odbiornik-wyrażenie, metody
+tylko na wartościach String).
+
+GUI: zakładki **Serial | HTTP** w dolnym doku (`HttpPanel.tsx`) -
+metoda, URL, ciało POST, historia 50 odpowiedzi ze statusem.
+Przykład `examples/web-server.ino` (/led?on=1 na diodze D4).
+
+Testy: `tests/web-f5.test.ts` (11) + E2E `scripts/verify6.mjs` (port
+9339; zakładka HTTP, GET /ping = pong, /TARGET?value=500 -> clamp
+100, 404 z `onNotFound`; screenshot /tmp/emu-http.png). 402/402.
+
+Świadome uproszczenia: brak TCP/handshakeu i chunkowania, jeden
+request na `handleClient`, `delay()` w handlerze ignorowany,
+timeout łączy się natychmiast (brak symulacji czasu bez odpowiedzi),
+`fetchHttp` tylko wobec własnej maszyny (między maszynami -
+`HTTPClient`).

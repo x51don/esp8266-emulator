@@ -76,7 +76,7 @@ bezpośrednio w `core/sketch/lexer.ts`, `core/sketch/parser.ts`,
 
 ## Luka systemowa (największa pozycja)
 
-### F5. Wirtualny LAN + panel HTTP
+### F5. Wirtualny LAN + panel HTTP - ZROBIONE (milestone 12)
 Sens tego szkicu to serwer HTTP z endpointami i fan-out do 10 peerów
 (`192.168.1.150..160`). Bez warstwy sieciowej szkic odpala się, ale nic nie
 można mu "kliknąć". Potrzeba:

@@ -8,6 +8,7 @@ import { SchematicCanvas, confirmOr, type CanvasHandles } from './components/Sch
 import { ComponentDialog } from './components/ComponentDialog';
 import { CodeEditor } from './components/CodeEditor';
 import { SerialMonitor } from './components/SerialMonitor';
+import { HttpPanel } from './components/HttpPanel';
 import { Toolbar } from './components/Toolbar';
 import { EXAMPLE_NAMES, EXAMPLE_SKETCHES, loadExample } from './examples';
 import { ProjectStore, type ProjectData } from './projects';
@@ -74,6 +75,7 @@ export function App() {
   const [projects, setProjects] = useState<string[]>(() => store.list());
   const [machine, setMachine] = useState(() => new Esp8266Machine({ board: boardId }));
   const canvasApi = useRef<CanvasHandles | null>(null);
+  const [bottomTab, setBottomTab] = useState<'serial' | 'http'>('serial');
 
   // ---- machine lifecycle: one machine per board (and per doc swap) ----
   useEffect(() => {
@@ -354,7 +356,29 @@ export function App() {
             <div className="panel-title">sketch.ino</div>
             <CodeEditor value={sketch} onChange={setSketch} />
           </div>
-          <SerialMonitor lines={serialLines} onClear={() => setSerialLines([])} />
+          <div className="dock-tabs">
+            <button
+              className={`dock-tab${bottomTab === 'serial' ? ' active' : ''}`}
+              onClick={() => setBottomTab('serial')}
+            >
+              Serial
+            </button>
+            <button
+              className={`dock-tab${bottomTab === 'http' ? ' active' : ''}`}
+              onClick={() => setBottomTab('http')}
+            >
+              HTTP
+            </button>
+          </div>
+          {bottomTab === 'serial' ? (
+            <SerialMonitor lines={serialLines} onClear={() => setSerialLines([])} />
+          ) : (
+            <HttpPanel
+              ip={machine.ip}
+              running={running}
+              onFetch={(mth, u, b) => machine.fetchHttp(mth, u, b)}
+            />
+          )}
         </div>
       </div>
       {configureId && (() => {

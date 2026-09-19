@@ -442,3 +442,98 @@ body {
   min-width: 86px;
   text-align: right;
 }
+
+/* ---------- bottom dock tabs + HTTP panel ---------- */
+
+.dock-tabs {
+  display: flex;
+  gap: 2px;
+  border-top: 1px solid var(--edge);
+}
+
+.dock-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 10px 2px;
+  cursor: pointer;
+}
+
+.dock-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent, #4aa8ff);
+}
+
+.http-ip {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+  margin-right: 6px;
+}
+
+.http-bar {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--edge);
+}
+
+.http-bar select,
+.http-bar .mini-btn {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.http-url {
+  flex: 1;
+  background: #05080c;
+  color: var(--fg);
+  border: 1px solid var(--edge);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
+.http-body {
+  background: #05080c;
+  color: var(--fg);
+  border: none;
+  border-bottom: 1px solid var(--edge);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 8px;
+  resize: vertical;
+}
+
+.http-entry {
+  font-family: var(--mono);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.http-status {
+  color: #9fe8c8;
+}
+
+.http-bad {
+  color: #ff8f7a;
+}
+
+.http-ok {
+  color: #7fc9ff;
+  word-break: break-all;
+}
+
+.http-resp {
+  margin: 2px 0 0 8px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--edge);
+  color: #d8e6df;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 180px;
+  overflow-y: auto;
+}
