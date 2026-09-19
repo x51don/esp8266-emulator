@@ -336,6 +336,7 @@ function drawComponent(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedC
   else if (c.type === 'led') drawLed(ctx, s, c);
   else if (c.type === 'diode' || c.type === 'zener') drawDiode(ctx, s, c);
   else if (c.type === 'transistor') drawTransistor(ctx, s, c);
+  else if (c.type === 'mosfet') drawMosfet(ctx, s, c);
   else if (c.type === 'resistor') drawResistor(ctx, s, c, body);
   else if (c.type === 'button') drawButton(ctx, s, c, body);
   else if (c.type === 'buzzer') drawBox(ctx, s, body, 'BUZZ', '#4a3a5a');
@@ -973,4 +974,80 @@ function formatResistance(r: unknown): string {
   if (v >= 1e6) return `${v / 1e6}M`;
   if (v >= 1e3) return `${v / 1e3}k`;
   return `${v}`;
+}
+
+function drawMosfet(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent): void {
+  const pg = s.schematic.pinWorld({ comp: c.id, pin: 'g' });
+  const pd = s.schematic.pinWorld({ comp: c.id, pin: 'd' });
+  const ps = s.schematic.pinWorld({ comp: c.id, pin: 's' });
+  const qg = s.viewport.worldToScreen(pg.x, pg.y);
+  const qd = s.viewport.worldToScreen(pd.x, pd.y);
+  const qs = s.viewport.worldToScreen(ps.x, ps.y);
+  const state = s.circuit?.semis.get(c.id);
+  const on = state?.on ?? false;
+  const burnt = state?.burnt ?? false;
+
+  ctx.save();
+  // same rotated frame as the transistor: gate left, D/S stacked right
+  const mx = (qd.x + qs.x) / 2;
+  const my = (qd.y + qs.y) / 2;
+  ctx.translate(qg.x, qg.y);
+  ctx.rotate(Math.atan2(my - qg.y, mx - qg.x));
+  const span = Math.hypot(qd.x - qs.x, qd.y - qs.y) / 2;
+  const gx = Math.hypot(mx - qg.x, my - qg.y) * 0.55; // insulated gate plate
+  const chx = gx + 4; // channel plate
+  const ex = mx - qg.x; // drain/source column
+
+  if (on && !burnt) {
+    const glow = ctx.createRadialGradient(chx, 0, 1, chx, 0, span * 2.4);
+    glow.addColorStop(0, 'rgba(120,255,170,0.3)');
+    glow.addColorStop(1, 'rgba(120,255,170,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(chx, 0, span * 2.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const stroke = burnt ? '#c05050' : on ? '#8ff0b0' : '#8494ab';
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath(); // gate lead + plate (no contact: the gate is insulated)
+  ctx.moveTo(0, 0);
+  ctx.lineTo(gx, 0);
+  ctx.moveTo(gx, -span * 0.85);
+  ctx.lineTo(gx, span * 0.85);
+  ctx.stroke();
+  ctx.beginPath(); // channel plate, broken mid-way like the datasheet symbol
+  ctx.moveTo(chx, -span * 0.85);
+  ctx.lineTo(chx, -2);
+  ctx.moveTo(chx, 2);
+  ctx.lineTo(chx, span * 0.85);
+  ctx.stroke();
+  ctx.beginPath(); // drain: channel top -> pin
+  ctx.moveTo(chx, -span * 0.6);
+  ctx.lineTo(ex, -span);
+  ctx.stroke();
+  ctx.beginPath(); // source: channel bottom -> pin
+  ctx.moveTo(chx, span * 0.6);
+  ctx.lineTo(ex, span);
+  ctx.stroke();
+  // N-channel arrow on the source stub, pointing toward the channel
+  const ax = chx + (ex - chx) * 0.45;
+  const ay = span * 0.6 + (span - span * 0.6) * 0.45;
+  const adx = ex - chx;
+  const ady = span - span * 0.6;
+  const al = Math.hypot(adx, ady) || 1;
+  const ux = adx / al;
+  const uy = ady / al;
+  ctx.beginPath();
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(ax - ux * 5 - uy * 3.2, ay - uy * 5 + ux * 3.2);
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(ax - ux * 5 + uy * 3.2, ay - uy * 5 - ux * 3.2);
+  ctx.stroke();
+  ctx.fillStyle = stroke;
+  ctx.font = '8px ui-monospace, monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('IRL540N', (gx + ex) / 2, span + 11);
+  ctx.restore();
 }

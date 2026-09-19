@@ -199,6 +199,10 @@ export function loadExample(name: string, boardId: string): Schematic {
       wire(sc, { comp: rl.id, pin: 'coilp' }, { comp: board.id, pin: 'D5' });
       wire(sc, { comp: rl.id, pin: 'coiln' }, { comp: board.id, pin: 'GND' });
       wire(sc, { comp: rl.id, pin: 'sw' }, { comp: board.id, pin: '3V3' });
+      // flyback diode across the coil: anode on coil-, cathode on coil+
+      const fd = sc.add('diode', rl.x + 20, rl.y + 90, {});
+      wire(sc, { comp: fd.id, pin: 'a' }, { comp: rl.id, pin: 'coiln' });
+      wire(sc, { comp: fd.id, pin: 'k' }, { comp: rl.id, pin: 'coilp' });
       // lamp on the switched side: no -> led -> resistor -> GND
       const led = sc.add('led', rl.x + 240, rl.y + 20, { forwardV: 2 });
       const rl_r = sc.add('resistor', rl.x + 360, rl.y + 20, { resistance: 220 });

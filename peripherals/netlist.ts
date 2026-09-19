@@ -44,7 +44,7 @@ export interface LedState {
 }
 
 export interface Fault {
-  kind: 'short' | 'contention' | 'overcurrent';
+  kind: 'short' | 'contention' | 'overcurrent' | 'warn';
   message: string;
   net: string;
 }
@@ -273,6 +273,13 @@ export class Netlist {
           if (term(c.id, 'c') === t) out.push([term(c.id, 'e'), SEMI_R]);
           else if (term(c.id, 'e') === t) out.push([term(c.id, 'c'), SEMI_R]);
         }
+      } else if (c.type === 'mosfet') {
+        // Enhancement-mode N-FET: the insulated gate charges no current, the
+        // channel closes once V(GS) reaches the (logic-level) threshold.
+        if (this.semiBias(c) !== 'off') {
+          if (term(c.id, 'd') === t) out.push([term(c.id, 's'), SEMI_R]);
+          else if (term(c.id, 's') === t) out.push([term(c.id, 'd'), SEMI_R]);
+        }
       } else if (c.type === 'ldr') {
         const r = ldrOhms(Number(c.params.lux ?? 1000));
         if (term(c.id, 'p1') === t) out.push([term(c.id, 'p2'), r]);
@@ -421,7 +428,8 @@ export class Netlist {
     // --- semiconductor states (F15) ---
     const semis = new Map<string, SemiState>();
     for (const c of this.comps.values()) {
-      if (c.type !== 'diode' && c.type !== 'zener' && c.type !== 'transistor') continue;
+      if (c.type !== 'diode' && c.type !== 'zener' && c.type !== 'transistor'
+        && c.type !== 'mosfet') continue;
       const mode = this.semiBias(c);
       const state: SemiState = { on: mode !== 'off', burnt: false, mode, currentMa: 0 };
       if (state.on) {
@@ -435,6 +443,10 @@ export class Netlist {
           from = term(c.id, npn ? 'c' : 'e');
           to = term(c.id, npn ? 'e' : 'c');
           vDrop = VCE_SAT;
+        } else if (c.type === 'mosfet') {
+          from = term(c.id, 'd');
+          to = term(c.id, 's');
+          vDrop = 0.1; // Rds(on) is folded into SEMI_R; drop stays tiny
         }
         const src = this.bestSource(from);
         const snk = this.bestSink(to);
@@ -458,6 +470,22 @@ export class Netlist {
         }
       }
       semis.set(c.id, state);
+    }
+
+    // --- drive hygiene: a BJT base tied straight to a driver is a real-world
+    // pin killer (the emulator's base current is not modelled, so warn) ---
+    for (const c of this.comps.values()) {
+      if (c.type !== 'transistor') continue;
+      const bt = term(c.id, 'b');
+      // a driver within ~1 ohm of the base means no series resistor anywhere
+      const bare = this.reachSources(bt).find((x) => x.r <= 1 && x.src.strong);
+      if (bare) {
+        faults.push({
+          kind: 'warn',
+          net: bt,
+          message: `${c.id} has no base resistor: a driver sits directly on the base (a real pin would dump ~100 mA through it - add ~1k)`,
+        });
+      }
     }
 
     // --- net levels, MCU pin reads, shorts ---
@@ -573,6 +601,12 @@ export class Netlist {
         const lo = this.bestSink(term(c.id, npn ? 'e' : 'b'));
         return hi && lo && hi.src.v - lo.src.v > DIODE_VF ? 'fwd' : 'off';
       }
+      if (c.type === 'mosfet') {
+        const vth = Number(c.params.vth ?? 2);
+        const hi = this.bestSource(term(c.id, 'g'));
+        const lo = this.bestSink(term(c.id, 's'));
+        return hi && lo && hi.src.v - lo.src.v >= vth ? 'fwd' : 'off';
+      }
       return 'off';
     } finally {
       this.semiGuard.delete(c.id);
@@ -610,6 +644,7 @@ export class Netlist {
       case 'diode': return ['a', 'k'];
       case 'zener': return ['a', 'k'];
       case 'transistor': return ['c', 'b', 'e'];
+      case 'mosfet': return ['d', 'g', 's'];
       case 'button': return ['p1', 'p2'];
       case 'buzzer': return ['+', '-'];
       case 'pot': return ['p1', 'w', 'p2'];

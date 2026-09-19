@@ -534,6 +534,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
       battery: { volts: 9 },
       diode: { forwardV: 0.7 },
       zener: { vz: 5.1 },
+      mosfet: { vth: 2 },
       transistor: { polarity: 'npn' },
       pot: { ratio: 0.5 },
       ldr: { lux: 300 },

@@ -99,6 +99,15 @@ export function footprintFor(type: string, params: Record<string, unknown>): Foo
         ],
         body: { x: -8, y: -PIN_GAP - 12, w: PIN_GAP + 20, h: 2 * PIN_GAP + 24 },
       };
+    case 'mosfet':
+      return {
+        pins: [
+          { name: 'g', x: 0, y: 0 },
+          { name: 'd', x: PIN_GAP, y: -PIN_GAP },
+          { name: 's', x: PIN_GAP, y: PIN_GAP },
+        ],
+        body: { x: -8, y: -PIN_GAP - 12, w: PIN_GAP + 20, h: 2 * PIN_GAP + 24 },
+      };
     case 'resistor':
       return {
         pins: [{ name: 'p1', x: 0, y: 0 }, { name: 'p2', x: PIN_GAP, y: 0 }],

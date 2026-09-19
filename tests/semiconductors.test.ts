@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { Netlist } from '../peripherals/netlist';
-import { GpioBus, PIN_OUTPUT } from '../peripherals/gpio';
+import { GpioBus, PIN_INPUT, PIN_OUTPUT } from '../peripherals/gpio';
 
 function bench() {
   const bus = new GpioBus();
@@ -190,5 +190,94 @@ describe('transistor', () => {
     bus.write(4, 1);
     const s = nl.resolve();
     expect(s.semis.get('q1')!.burnt).toBe(true);
+  });
+});
+
+describe('logic-level MOSFET', () => {
+  function followerLoad() {
+    const { bus, nl } = bench();
+    nl.addComponent('r1', 'resistor', { pins: ['p1', 'p2'], resistance: 220 });
+    nl.addComponent('led1', 'led', { pins: ['a', 'k'], forwardV: 2 });
+    nl.addComponent('m1', 'mosfet', { pins: ['d', 'g', 's'], vth: 2 });
+    nl.addWire('mcu.D2', 'm1.g'); // gates take no current: direct is fine
+    nl.addWire('m1.s', 'mcu.GND');
+    nl.addWire('mcu.3V3', 'r1.p1');
+    nl.addWire('r1.p2', 'led1.a');
+    nl.addWire('led1.k', 'm1.d');
+    return { bus, nl };
+  }
+
+  it('gate HIGH from a 3.3V pin switches the load on', () => {
+    const { bus, nl } = followerLoad();
+    bus.setMode(4, PIN_OUTPUT);
+    bus.write(4, 1);
+    const s = nl.resolve();
+    expect(s.semis.get('m1')!.on).toBe(true);
+    expect(s.leds.get('led1')!.on).toBe(true);
+  });
+
+  it('gate LOW (or floating) leaves the load off', () => {
+    const { bus, nl } = followerLoad();
+    bus.setMode(4, PIN_OUTPUT);
+    bus.write(4, 0);
+    let s = nl.resolve();
+    expect(s.semis.get('m1')!.on).toBe(false);
+    expect(s.leds.get('led1')!.on).toBe(false);
+    bus.setMode(4, PIN_INPUT); // gate floats
+    s = nl.resolve();
+    expect(s.semis.get('m1')!.on).toBe(false);
+  });
+
+  it('5V across a bare d-s channel burns with the gate driven', () => {
+    const { bus, nl } = bench();
+    nl.addComponent('m1', 'mosfet', { pins: ['d', 'g', 's'], vth: 2 });
+    nl.addWire('mcu.D2', 'm1.g');
+    nl.addWire('m1.s', 'mcu.GND');
+    nl.addWire('mcu.5V', 'm1.d');
+    bus.setMode(4, PIN_OUTPUT);
+    bus.write(4, 1);
+    const s = nl.resolve();
+    expect(s.semis.get('m1')!.burnt).toBe(true);
+    expect(s.faults.some((f) => /m1/.test(f.message))).toBe(true);
+  });
+});
+
+describe('drive hygiene', () => {
+  it('a transistor base wired straight to a pin warns about the resistor', () => {
+    const { bus, nl } = bench();
+    nl.addComponent('q1', 'transistor', { pins: ['c', 'b', 'e'], polarity: 'npn' });
+    nl.addWire('mcu.D2', 'q1.b');
+    nl.addWire('q1.e', 'mcu.GND');
+    bus.setMode(4, PIN_OUTPUT);
+    bus.write(4, 1);
+    const s = nl.resolve();
+    expect(s.semis.get('q1')!.on).toBe(true); // still switches in the emulator
+    const w = s.faults.find((f) => /base resistor/i.test(f.message));
+    expect(w).toBeTruthy();
+    expect(w!.message).toContain('q1');
+  });
+
+  it('a base behind any resistance stays quiet', () => {
+    const { bus, nl } = bench();
+    nl.addComponent('rb', 'resistor', { pins: ['p1', 'p2'], resistance: 1000 });
+    nl.addComponent('q1', 'transistor', { pins: ['c', 'b', 'e'], polarity: 'npn' });
+    nl.addWire('mcu.D2', 'rb.p1');
+    nl.addWire('rb.p2', 'q1.b');
+    nl.addWire('q1.e', 'mcu.GND');
+    bus.setMode(4, PIN_OUTPUT);
+    bus.write(4, 1);
+    const s = nl.resolve();
+    expect(s.faults.some((f) => /base resistor/i.test(f.message))).toBe(false);
+  });
+
+  it('a MOSFET gate straight on a pin is good practice, no warning', () => {
+    const { bus, nl } = bench();
+    nl.addComponent('m1', 'mosfet', { pins: ['d', 'g', 's'], vth: 2 });
+    nl.addWire('mcu.D2', 'm1.g');
+    nl.addWire('m1.s', 'mcu.GND');
+    bus.setMode(4, PIN_OUTPUT);
+    bus.write(4, 1);
+    const s = nl.resolve();
+    expect(s.faults.some((f) => /base resistor/i.test(f.message))).toBe(false);
   });
 });

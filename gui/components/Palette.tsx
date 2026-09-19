@@ -33,6 +33,7 @@ const GROUPS: Array<{ title: string; items: Item[] }> = [
       { type: 'zener', label: 'Zener diode', hint: 'clamps reverse voltage; dbl-click sets Vz', glyph: '\u25B6Z' },
       { type: 'transistor', label: 'Transistor NPN', hint: 'BC547; base drives the collector-emitter switch', glyph: '\u22A2' },
       { type: 'transistor', label: 'Transistor PNP', hint: 'BC557; high-side switch, active-LOW base', glyph: '\u22A3', params: { polarity: 'pnp' } },
+      { type: 'mosfet', label: 'MOSFET IRL540N', hint: 'logic-level gate; drives big loads from a pin', glyph: '\u22A2|' },
     ],
   },
   {

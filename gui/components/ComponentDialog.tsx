@@ -23,6 +23,7 @@ const FIELDS: Record<string, Field[]> = {
       options: [{ value: 'npn', label: 'NPN (BC547)' }, { value: 'pnp', label: 'PNP (BC557)' }],
     },
   ],
+  mosfet: [{ key: 'vth', label: 'Gate threshold Vth', unit: 'V', kind: 'num', step: 0.1 }],
   battery: [{ key: 'volts', label: 'Voltage', unit: 'V', kind: 'num', step: 0.5 }],
   cap: [{ key: 'uf', label: 'Capacitance', unit: 'uF', kind: 'num', step: 10 }],
   buzzer: [],

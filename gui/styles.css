@@ -137,12 +137,15 @@ body {
 .palette {
   width: 170px;
   flex: 0 0 auto;
+  min-height: 0;
   background: var(--panel);
   border-right: 1px solid var(--edge);
   padding: 8px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .palette-item {

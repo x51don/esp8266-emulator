@@ -30,8 +30,8 @@ bench, `verify9` the project autosave round-trip).
    library: **potentiometer, LDR, DHT11/22, SG90 servo, relay (NO/NC), SSD1306
    OLED, WS2812 NeoPixel strip, HC-SR04 ultrasonic ranger**, plus discrete
    semiconductors: **1N4148 diode, Zener diode (dbl-click sets Vz), BC547 NPN
-   and BC557 PNP transistors** (base-driven collector-emitter switches, a
-   documented approximation - not SPICE). The palette is grouped by function
+   and BC557 PNP transistors, IRL540N logic-level MOSFET** (base/gate-driven
+   switches, a documented approximation - not SPICE). The palette is grouped by function
    (Board, Power, Semiconductors, Passive, Outputs, Inputs, Displays).
    Preset examples drop these already wired to the right pins.
 2. **Wire pins** - press on a pin dot and drag to another pin. Wires are
@@ -43,6 +43,9 @@ bench, `verify9` the project autosave round-trip).
    **Right-click a wire** to colour it from a 12-colour palette; by default
    wires paint themselves by net role - power rails red, GND white, signal
    nets green (the automatic mode is one click back).
+   The banner also warns about bad practice, e.g. a transistor base tied
+   straight to a GPIO with no ~1k series resistor (a MOSFET gate is fine
+   direct).
    Double-click a wire to delete it; `Del` removes selected components (with
    connected wires) after a confirm. **Double-click a component** to open its
    properties dialog (resistance, capacitance, LED forward voltage, battery
