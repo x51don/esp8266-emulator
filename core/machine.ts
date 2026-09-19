@@ -132,6 +132,10 @@ export class Esp8266Machine implements LanHost {
   faultReason: string | null = null;
   /** ESP.restart() latched; consumed by advance() to reboot from setup(). */
   private restartRequested = false;
+  /** F6: the emulated flash sector; survives run()/restart, not the GC. */
+  private eeprom = new Uint8Array(4096).fill(0xff);
+  /** bumps on every commit() - the GUI uses it to mark a project dirty */
+  eepromDirty = 0;
   /** -1 = unlimited; otherwise remaining interpreter yields for this advance. */
   private yieldBudget = -1;
 
@@ -340,6 +344,84 @@ export class Esp8266Machine implements LanHost {
    * console with a [net->host:port] tag - the "Serial-only dashboard".
    * available()/read() stay empty: outside clients cannot connect here.
    */
+  /** 4 KiB emulated EEPROM (core layout: LE lengths, raw ints/floats). */
+  eepromBytes(): Uint8Array {
+    return this.eeprom.slice();
+  }
+
+  eepromRestore(bytes: Uint8Array): void {
+    this.eeprom.set(bytes.subarray(0, Math.min(bytes.length, 4096)));
+  }
+
+  private eepromCall(meth: string, args: HostValue[]): HostResult {
+    const num = (v: HostValue | undefined): number =>
+      typeof v === 'number' ? v : Number(v ?? 0) || 0;
+    const ok = (v: number) => ({ value: v });
+    const rd = (addr: number): number =>
+      addr >= 0 && addr < 4096 ? this.eeprom[addr] : 0xff;
+    const dv = new DataView(this.eeprom.buffer);
+    switch (meth) {
+      case 'begin':
+        return ok(args.length === 0 || (num(args[0]) > 0 && num(args[0]) <= 4096) ? 1 : 0);
+      case 'read':
+        return ok(rd(num(args[0])));
+      case 'write': {
+        const a = num(args[0]);
+        if (a >= 0 && a < 4096) this.eeprom[a] = Math.trunc(num(args[1])) & 0xff;
+        return ok(0);
+      }
+      case 'commit':
+        this.eepromDirty++;
+        return ok(1);
+      case 'length':
+        return ok(4096);
+      case 'erase': case 'clear':
+        this.eeprom.fill(0xff);
+        return ok(1);
+      case 'readString': {
+        const a = num(args[0]);
+        if (a < 0 || a + 4 > 4096) return { value: '' };
+        const n = dv.getUint32(a, true);
+        if (n > 4096 - a - 4) return { value: '' }; // erased (0xFFFFFFFF) or corrupt
+        return { value: String.fromCharCode(...this.eeprom.subarray(a + 4, a + 4 + n)) };
+      }
+      case 'writeString': {
+        const a = num(args[0]);
+        const text = typeof args[1] === 'string' && !args[1].startsWith('@') ? args[1] : '';
+        if (a < 0 || a + 4 + text.length > 4096) return ok(0);
+        dv.setUint32(a, text.length, true);
+        for (let i = 0; i < text.length; i++) this.eeprom[a + 4 + i] = text.charCodeAt(i) & 0xff;
+        return ok(1);
+      }
+      case 'readInt': {
+        const a = num(args[0]);
+        return a >= 0 && a + 4 <= 4096 ? ok(dv.getInt32(a, true)) : ok(-1);
+      }
+      case 'writeInt': {
+        const a = num(args[0]);
+        if (a >= 0 && a + 4 <= 4096) dv.setInt32(a, Math.trunc(num(args[1])) | 0, true);
+        return ok(0);
+      }
+      case 'readFloat': case 'readDouble': {
+        const a = num(args[0]);
+        const size = meth === 'readFloat' ? 4 : 8;
+        if (a < 0 || a + size > 4096) return ok(0);
+        return ok(meth === 'readFloat' ? dv.getFloat32(a, true) : dv.getFloat64(a, true));
+      }
+      case 'writeFloat': case 'writeDouble': {
+        const a = num(args[0]);
+        const size = meth === 'writeFloat' ? 4 : 8;
+        if (a >= 0 && a + size <= 4096) {
+          if (meth === 'writeFloat') dv.setFloat32(a, num(args[1]), true);
+          else dv.setFloat64(a, num(args[1]), true);
+        }
+        return ok(0);
+      }
+      default:
+        throw new Error(`EEPROM.${meth} is not implemented on the emulated ESP8266`);
+    }
+  }
+
 private npCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
   const num = (v: HostValue | undefined): number => (typeof v === 'number' ? v : Number(v ?? 0));
   // Adafruit packs Color() as G<<16|R<<8|B; the netlist strip stores RR GG BB
@@ -1256,6 +1338,7 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
           case 'WiFiServer': return { value: args.length ? num(args[0]) : 80 };
 
           default: {
+            if (name.startsWith('EEPROM.')) return this.eepromCall(name.slice(7), args);
             const dot = name.indexOf('.');
             const obj = dot > 0 ? this.wifi.objs.get(name.slice(0, dot)) : undefined;
             if (obj) {

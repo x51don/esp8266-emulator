@@ -9,6 +9,28 @@ export interface ProjectData {
   sketch: string;
   schematic: string; // Schematic.toJSON() text
   board: string;
+  eeprom?: string; // base64 of the 4096-byte flash sector (F6)
+}
+
+export function eepromToB64(bytes: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 1024) {
+    s += String.fromCharCode(...bytes.subarray(i, i + 1024));
+  }
+  return btoa(s);
+}
+
+/** undefined / corrupt base64 -> an unprogrammed chip (all 0xFF) */
+export function eepromFromB64(b64: string | undefined): Uint8Array {
+  const out = new Uint8Array(4096).fill(0xff);
+  if (!b64) return out;
+  try {
+    const d = atob(b64);
+    for (let i = 0; i < Math.min(d.length, 4096); i++) out[i] = d.charCodeAt(i);
+  } catch {
+    /* keep the erased chip */
+  }
+  return out;
 }
 
 const PREFIX = 'esp8266-emu.project.';

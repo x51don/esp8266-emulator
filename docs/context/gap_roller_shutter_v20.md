@@ -120,3 +120,10 @@ peerów kończy się `-1` bez wieszania. Po drodze doszły: stałe
 rozmiary tablic, ICACHE_*, `void f(void)`, typedefy w parametrach,
 switch/case, `String += n`, `String == String`, indeksowanie Stringa
 (szczegóły w `milestone_13_roleta_v20.md`).
+
+---
+
+## F6 - EEPROM (poza szkicem v20, z listy brakow) - ZROBIONE
+
+Trwały sektor 4096 B przez `ESP.restart()`, maszyna + projekty (base64).
+Szczoly: `milestone_14_eeprom.md`.

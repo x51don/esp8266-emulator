@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ProjectStore, type ProjectData } from '../gui/projects';
+import { eepromFromB64, eepromToB64, ProjectStore, type ProjectData } from '../gui/projects';
 
 /** Minimal in-memory Storage stand-in. */
 class FakeStorage {
@@ -72,5 +72,28 @@ describe('ProjectStore', () => {
     const st = new ProjectStore(new FakeStorage());
     expect(() => st.parseImport('nonsense')).toThrow();
     expect(() => st.parseImport('{"sketch":1}')).toThrow();
+  });
+});
+
+describe('EEPROM field (F6)', () => {
+  it('round-trips through base64 and through the store', () => {
+    const bytes = new Uint8Array(4096).fill(0xff);
+    bytes[0] = 1;
+    bytes[4095] = 200;
+    const b64 = eepromToB64(bytes);
+    expect(eepromFromB64(b64)).toEqual(bytes);
+
+    const store = new ProjectStore(new FakeStorage());
+    store.save({ ...sample, eeprom: b64 });
+    expect(store.load('lab-4')?.eeprom).toBe(b64);
+  });
+
+  it('legacy projects without the field load as an erased chip', () => {
+    const store = new ProjectStore(new FakeStorage());
+    store.save(sample);
+    expect(eepromFromB64(store.load('lab-4')?.eeprom)).toEqual(
+      new Uint8Array(4096).fill(0xff),
+    );
+    expect(eepromFromB64('not base64!!').every((b) => b === 0xff)).toBe(true);
   });
 });

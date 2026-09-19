@@ -11,7 +11,7 @@ import { SerialMonitor } from './components/SerialMonitor';
 import { HttpPanel } from './components/HttpPanel';
 import { Toolbar } from './components/Toolbar';
 import { EXAMPLE_NAMES, EXAMPLE_SKETCHES, loadExample } from './examples';
-import { ProjectStore, type ProjectData } from './projects';
+import { eepromFromB64, eepromToB64, ProjectStore, type ProjectData } from './projects';
 
 export const NEW_SKETCH_TEMPLATE = `// New project - ESP8266 (Wemos D1 mini / NodeMCU).
 // Build a circuit, wire it to a pin and drive it from here.
@@ -76,10 +76,15 @@ export function App() {
   const [machine, setMachine] = useState(() => new Esp8266Machine({ board: boardId }));
   const canvasApi = useRef<CanvasHandles | null>(null);
   const [bottomTab, setBottomTab] = useState<'serial' | 'http'>('serial');
+  /** F6: EEPROM contents to plant into the next machine (project load) */
+  const pendingEeprom = useRef<Uint8Array | null>(null);
 
   // ---- machine lifecycle: one machine per board (and per doc swap) ----
   useEffect(() => {
     const m = new Esp8266Machine({ board: boardId });
+    // project load wins; otherwise flash survives a board switch like on hardware
+    m.eepromRestore(pendingEeprom.current ?? machineRef.current?.eepromBytes() ?? new Uint8Array(0));
+    pendingEeprom.current = null;
     const offSerial = m.onSerial((line) => setSerialLines((prev) => (prev.length > 600 ? [...prev.slice(-500), line] : [...prev, line])));
     // a runtime error faults the machine mid-run; surface it and leave play mode
     const offFault = m.onFault((reason) => {
@@ -162,12 +167,14 @@ export function App() {
       sketch,
       schematic: schematic.toJSON(),
       board: boardId,
+      eeprom: eepromToB64(machine.eepromBytes()),
     }),
-    [sketch, schematic, boardId],
+    [sketch, schematic, boardId, machine],
   );
 
   const onNewProject = useCallback(() => {
     if (!confirmOr('Start a new project? The current sketch and circuit are replaced.')) return;
+    pendingEeprom.current = new Uint8Array(4096).fill(0xff);
     const fresh = new Schematic();
     fresh.addBoard(boardId, 160, 60);
     applyDoc(fresh, NEW_SKETCH_TEMPLATE);
@@ -197,6 +204,7 @@ export function App() {
     }
     if (!confirmOr(`Replace the current sketch and circuit with project "${name}"?`)) return;
     try {
+      pendingEeprom.current = eepromFromB64(data.eeprom);
       applyDoc(Schematic.fromJSON(data.schematic), data.sketch);
       setBoardId(data.board);
     } catch (e) {
@@ -232,6 +240,7 @@ export function App() {
         if (!confirmOr(`Import "${data.name || file.name}"? It replaces the current sketch and circuit.`))
           return;
         try {
+          pendingEeprom.current = eepromFromB64(data.eeprom);
           applyDoc(Schematic.fromJSON(data.schematic), data.sketch);
           setBoardId(data.board);
         } catch (e) {
