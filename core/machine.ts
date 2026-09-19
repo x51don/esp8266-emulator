@@ -37,6 +37,15 @@ export interface SerialLine {
 
 export type MachinePhase = 'loaded' | 'running' | 'stopped' | 'faulted';
 
+/** Boot mode the ROM samples from GPIO15/GPIO0/GPIO2 at reset release. */
+export type BootMode = 'flash' | 'download' | 'no-boot' | 'crash-gpio2';
+
+const BOOT_MESSAGES: Record<Exclude<BootMode, 'flash'>, string> = {
+  download: 'boot mode:(1,7): GPIO0 LOW at reset - UART download mode, the sketch does not run',
+  'no-boot': 'boot mode:(0,7): GPIO15 HIGH at reset - the chip does not boot (strap GPIO15 to GND)',
+  'crash-gpio2': 'boot mode:(3,7): panic(eagle fw): GPIO2 must be HIGH at reset',
+};
+
 interface Alarm {
   periodUs: number;
   reload: boolean;
@@ -98,6 +107,8 @@ export class Esp8266Machine implements LanHost {
   private isrGen: SketchGen | null = null;
   private mainSuspended = false;
   private machinePhase: MachinePhase = 'loaded';
+  /** Boot mode latched by the last run() (strap sampling at reset release). */
+  private boot: BootMode = 'flash';
   private cpuTask: TimerId | null = null;
   private isrTask: TimerId | null = null;
   private alarms = new Map<number, Alarm>();
@@ -270,6 +281,14 @@ export class Esp8266Machine implements LanHost {
     this.faultReason = null;
     this.printBuf = '';
     this.droppedLines = 0;
+    // F1.1: the ROM samples GPIO15/GPIO0/GPIO2 at reset release. Anything but
+    // a plain flash boot leaves the sketch dead until the next run().
+    this.boot = this.sampleBootMode();
+    if (this.boot !== 'flash') {
+      this.machinePhase = 'loaded';
+      this.appendText(BOOT_MESSAGES[this.boot] + '\n');
+      return;
+    }
     this.mainGen = this.interp.setup();
     this.mainSuspended = false;
     this.scheduleWake(0, false);
@@ -342,6 +361,30 @@ export class Esp8266Machine implements LanHost {
 
   phase(): MachinePhase {
     return this.machinePhase;
+  }
+
+  /** Boot mode the ROM latched at the last reset release. */
+  bootMode(): BootMode {
+    return this.boot;
+  }
+
+  /** GPIO15 HIGH blocks the boot; GPIO0 LOW selects UART download;
+   *  GPIO2 LOW panics the ROM. External drivers beat the weak straps.
+   *  One-shot solve: the resolve cache and its listeners stay untouched. */
+  private sampleBootMode(): BootMode {
+    const r = this.netlist.resolve();
+    const level = (gpio: number): 0 | 1 => {
+      for (const rail of getBoard(this.boardId).rails) {
+        if (rail.gpio !== gpio) continue;
+        const ext = r.externals.get(`mcu.${rail.name}`);
+        if (ext !== undefined) return ext ? 1 : 0;
+      }
+      return this.gpio.read(gpio); // no driver on the line: the strap itself
+    };
+    if (level(15) === 1) return 'no-boot';
+    if (level(0) === 0) return 'download';
+    if (level(2) === 0) return 'crash-gpio2';
+    return 'flash';
   }
 
   pinLevel(gpio: number): 0 | 1 {
@@ -783,7 +826,7 @@ private httpCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
       return { value: 0 };
     case 'setReuse': case 'setAuthorization': case 'addHeader': case 'setFollowRedirects':
     case 'setDNS': case 'useHTTP11': case 'setCTimeout': case 'setLedOff': case 'setLedOn':
-    case 'setConnectionTimeout': case 'setConnectTimeout': case 'setReuse':
+    case 'setConnectionTimeout': case 'setConnectTimeout':
       return { value: 0 };
     default:
       throw new Error(`'HTTPClient' has no method '${meth}'`);

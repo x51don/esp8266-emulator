@@ -25,7 +25,11 @@ describe('lifecycle', () => {
     m.advance(10);
     m.reset();
     expect(m.timeMs()).toBe(0);
-    expect(m.pinLevel(2)).toBe(0);
+    // F1.1: D4/GPIO2 no longer PUSHES - the pad is back to input with the
+    // chip's boot strap (weak pull-up) on it, so it reads HIGH but drives 0.
+    expect(m.pinLevel(2)).toBe(1);
+    expect(m.gpio.driveState(2).kind).toBe('weak-high');
+    expect(m.pinLevel(4)).toBe(0); // GPIO4: floating, no strap
   });
 
   it('stop() freezes execution mid-blink, run() restarts from the top', () => {

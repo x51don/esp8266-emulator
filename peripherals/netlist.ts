@@ -669,6 +669,9 @@ function pinSource(bus: GpioBus, gpio: number): Source | null {
       return { v: d.level === 1 ? 3.3 : 0, rInternal: 0, strong: true, duty: 1 };
     case 'weak-high':
       return { v: 3.3, rInternal: PULLUP_R, strong: false, duty: 1 };
+    case 'weak-low':
+      // the GPIO15 boot strap: a weak pull-DOWN to GND
+      return { v: 0, rInternal: PULLUP_R, strong: false, duty: 0 };
     case 'pwm':
       return { v: 3.3, rInternal: 0, strong: true, duty: d.duty };
     default:

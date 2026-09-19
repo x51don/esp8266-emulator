@@ -13,7 +13,9 @@
  * - GPIO16 is open-drain: writing HIGH releases a weak pull-up instead of
  *   pushing the line (matches real D0 behaviour);
  * - PWM: duty >= 512 reads HIGH; duty 0/1023 behave as static levels;
- * - INPUT_PULLUP is a weak HIGH (external driver always wins).
+ * - INPUT_PULLUP is a weak HIGH (external driver always wins);
+ * - out of reset GPIO0/GPIO2 carry a weak pull-UP and GPIO15 a weak pull-DOWN
+ *   (the boot-mode straps); any pinMode() call replaces that resistor.
  */
 
 export const PIN_INPUT = 'input';
@@ -22,17 +24,23 @@ export const PIN_INPUT_PULLUP = 'input_pullup';
 
 export type PinMode = typeof PIN_INPUT | typeof PIN_OUTPUT | typeof PIN_INPUT_PULLUP;
 export type ExternalDriver = 'none' | 'high' | 'low';
+/** Resistor on the pad that does not come from the sketch: INPUT_PULLUP is
+ *  'up'; the ESP8266 also ships GPIO0/GPIO2 with pull-UPS and GPIO15 with a
+ *  pull-DOWN (~45 kOhm) enabled out of reset - the boot-mode straps. */
+export type PinPull = 'none' | 'up' | 'down';
 
 export type DriveState =
   | { kind: 'float' }
   | { kind: 'push'; level: 0 | 1 }
   | { kind: 'weak-high' }
+  | { kind: 'weak-low' }
   | { kind: 'pwm'; duty: number }; // 0..1, mid-range
 
 export interface PinSnapshot {
   mode: PinMode;
   latch: 0 | 1;
   pwm: number;      // -1 when analogWrite inactive, else 0..1023
+  pull: PinPull;
   external: ExternalDriver;
   drive: DriveState;
   read: 0 | 1;
@@ -42,10 +50,16 @@ export interface PinSnapshot {
 export const GPIO_COUNT = 17;
 const PWM_THRESHOLD = 512; // duty >= this reads HIGH
 
+/** Boot strapping: weak pull-ups hold 0/2 HIGH and the pull-down holds 15
+ *  LOW while nothing external drives the line (datasheet reset defaults). */
+const STRAP_UP: ReadonlySet<number> = new Set([0, 2]);
+const STRAP_DOWN: ReadonlySet<number> = new Set([15]);
+
 interface PinState {
   mode: PinMode;
   latch: 0 | 1;
   pwm: number; // -1 = inactive
+  pull: PinPull;
   external: ExternalDriver;
 }
 
@@ -57,7 +71,9 @@ export class GpioBus {
 
   constructor() {
     for (let g = 0; g < GPIO_COUNT; g++) {
-      this.pins.set(g, { mode: PIN_INPUT, latch: 0, pwm: -1, external: 'none' });
+      this.pins.set(g, {
+        mode: PIN_INPUT, latch: 0, pwm: -1, external: 'none', pull: defaultPull(g),
+      });
     }
   }
 
@@ -75,9 +91,15 @@ export class GpioBus {
 
   setMode(gpio: number, mode: PinMode): void {
     const p = this.pin(gpio);
-    if (p.mode === mode) return;
+    // the sketch's mode owns the pad resistor: INPUT_PULLUP is the same ~45k
+    // resistor the boot straps use, and ANY pinMode() call switches that
+    // strap off (so pinMode(pin, INPUT) on a strap pin floats it, as on HW).
+    const pull: PinPull = mode === PIN_INPUT_PULLUP ? 'up' : 'none';
+    const pwm = mode !== PIN_OUTPUT ? -1 : p.pwm; // pinMode() kills PWM on the core too
+    if (p.mode === mode && p.pull === pull && p.pwm === pwm) return;
     p.mode = mode;
-    if (mode !== PIN_OUTPUT) p.pwm = -1; // pinMode() kills PWM on the core too
+    p.pull = pull;
+    p.pwm = pwm;
     this.notify(gpio);
   }
 
@@ -130,7 +152,8 @@ export class GpioBus {
       if (p.latch === 1) return isOpenDrain ? { kind: 'weak-high' } : { kind: 'push', level: 1 };
       return { kind: 'push', level: 0 };
     }
-    if (p.mode === PIN_INPUT_PULLUP) return { kind: 'weak-high' };
+    if (p.pull === 'up') return { kind: 'weak-high' };
+    if (p.pull === 'down') return { kind: 'weak-low' };
     return { kind: 'float' };
   }
 
@@ -144,7 +167,7 @@ export class GpioBus {
       case 'push': return d.level;
       case 'weak-high': return 1;
       case 'pwm': return d.duty >= PWM_THRESHOLD / 1023 ? 1 : 0;
-      default: return 0; // floating resolves LOW in this model
+      default: return 0; // floating and weak-low resolve LOW in this model
     }
   }
 
@@ -161,6 +184,7 @@ export class GpioBus {
       mode: p.mode,
       latch: p.latch,
       pwm: p.pwm,
+      pull: p.pull,
       external: p.external,
       drive: this.driveState(gpio),
       read: this.read(gpio),
@@ -168,15 +192,19 @@ export class GpioBus {
     };
   }
 
+  /** Chip reset: pads go input and the boot-strap resistors come back on. */
   reset(): void {
     for (let g = 0; g < GPIO_COUNT; g++) {
       const p = this.pins.get(g)!;
+      const pull = defaultPull(g);
       const dirty =
-        p.mode !== PIN_INPUT || p.latch !== 0 || p.pwm !== -1 || p.external !== 'none';
+        p.mode !== PIN_INPUT || p.latch !== 0 || p.pwm !== -1
+        || p.external !== 'none' || p.pull !== pull;
       p.mode = PIN_INPUT;
       p.latch = 0;
       p.pwm = -1;
       p.external = 'none';
+      p.pull = pull;
       if (dirty) this.notify(g);
     }
   }
@@ -192,4 +220,11 @@ export class GpioBus {
     const snap = this.snapshot(gpio);
     for (const l of this.listeners) l(gpio, snap);
   }
+}
+
+/** Reset defaults of the pad resistors: pull-ups on the boot straps. */
+function defaultPull(gpio: number): PinPull {
+  if (STRAP_UP.has(gpio)) return 'up';
+  if (STRAP_DOWN.has(gpio)) return 'down';
+  return 'none';
 }

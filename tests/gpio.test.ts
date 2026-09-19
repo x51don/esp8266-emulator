@@ -7,11 +7,40 @@ import { GpioBus, PIN_INPUT, PIN_OUTPUT, PIN_INPUT_PULLUP, type DriveState } fro
 // file and the netlist are its two clients.
 
 describe('modes and reads', () => {
-  it('fresh pins are floating inputs reading LOW', () => {
+  it('fresh non-strap pins are floating inputs reading LOW', () => {
     const bus = new GpioBus();
-    expect(bus.getMode(2)).toBe(PIN_INPUT);
-    expect(bus.read(2)).toBe(0);
-    expect(bus.driveState(2)).toEqual({ kind: 'float' } satisfies DriveState);
+    expect(bus.getMode(4)).toBe(PIN_INPUT);
+    expect(bus.read(4)).toBe(0);
+    expect(bus.driveState(4)).toEqual({ kind: 'float' } satisfies DriveState);
+  });
+
+  // F1.1 boot strapping: GPIO0/GPIO2 come out of reset with an internal
+  // pull-UP (~45k) and GPIO15 with a pull-DOWN. The sketch's first pinMode()
+  // replaces the strap resistor.
+  it('GPIO0/GPIO2 carry a pull-up out of reset', () => {
+    const bus = new GpioBus();
+    for (const g of [0, 2]) {
+      expect(bus.read(g)).toBe(1);
+      expect(bus.driveState(g)).toEqual({ kind: 'weak-high' } satisfies DriveState);
+      expect(bus.snapshot(g).pull).toBe('up');
+    }
+  });
+
+  it('GPIO15 carries a pull-down out of reset', () => {
+    const bus = new GpioBus();
+    expect(bus.read(15)).toBe(0);
+    expect(bus.driveState(15)).toEqual({ kind: 'weak-low' } satisfies DriveState);
+    // a strong external HIGH overrides the weak pull-down
+    bus.setExternalDriver(15, 'high');
+    expect(bus.read(15)).toBe(1);
+  });
+
+  it('pinMode clears the boot strap on 0/2/15', () => {
+    const bus = new GpioBus();
+    bus.setMode(0, PIN_INPUT); // plain input drops the pull-up
+    expect(bus.driveState(0)).toEqual({ kind: 'float' } satisfies DriveState);
+    bus.setMode(15, PIN_INPUT_PULLUP); // sketch pull-up wins over the strap
+    expect(bus.driveState(15)).toEqual({ kind: 'weak-high' } satisfies DriveState);
   });
 
   it('output latches and pushes the level out', () => {
