@@ -15,6 +15,14 @@ type Field =
 const FIELDS: Record<string, Field[]> = {
   resistor: [{ key: 'resistance', label: 'Resistance', unit: 'ohm', kind: 'num', step: 10 }],
   led: [{ key: 'forwardV', label: 'Forward voltage', unit: 'V', kind: 'num', step: 0.1 }],
+  diode: [],
+  zener: [{ key: 'vz', label: 'Breakdown voltage Vz', unit: 'V', kind: 'num', step: 0.1 }],
+  transistor: [
+    {
+      key: 'polarity', label: 'Type', kind: 'select',
+      options: [{ value: 'npn', label: 'NPN (BC547)' }, { value: 'pnp', label: 'PNP (BC557)' }],
+    },
+  ],
   battery: [{ key: 'volts', label: 'Voltage', unit: 'V', kind: 'num', step: 0.5 }],
   cap: [{ key: 'uf', label: 'Capacitance', unit: 'uF', kind: 'num', step: 10 }],
   buzzer: [],

@@ -44,13 +44,23 @@ export interface LedState {
 }
 
 export interface Fault {
-  kind: 'short' | 'contention';
+  kind: 'short' | 'contention' | 'overcurrent';
   message: string;
   net: string;
 }
 
+export interface SemiState {
+  on: boolean;
+  burnt: boolean;
+  /** 'fwd' conducting forward, 'rev' Zener breakdown, 'off' blocking */
+  mode: 'fwd' | 'rev' | 'off';
+  currentMa: number;
+}
+
 export interface ResolveResult {
   leds: Map<string, LedState>;
+  /** diode / zener / transistor states (F15) */
+  semis: Map<string, SemiState>;
   /** logic level every MCU signal pin sees (what digitalRead() will return) */
   pinLevels: Map<string, 0 | 1>;
   /** levels imposed on MCU pins by OTHER drivers only (for the GPIO bus) */
@@ -66,6 +76,10 @@ const FORCE_R = 10_000;
 const VF_DEFAULT = 2;
 const ON_MA = 0.05;
 const BURN_MA = 50;
+/** Series resistance of a conducting diode / saturated transistor link. */
+const SEMI_R = 10;
+const DIODE_VF = 0.7;
+const VCE_SAT = 0.2;
 const RAIL_V: Record<string, number> = { GND: 0, '3V3': 3.3, '5V': 5, VIN: 5, '3.3V': 3.3 };
 
 const term = (compId: string, pin: string) => `${compId}.${pin}`;
@@ -243,6 +257,22 @@ export class Netlist {
           if (term(c.id, x) === t) out.push([term(c.id, y), 0]);
           else if (term(c.id, y) === t) out.push([term(c.id, x), 0]);
         }
+      } else if (c.type === 'diode' || c.type === 'zener') {
+        // A biased junction is a small resistance in the conductive graph
+        // (documented approximation: its voltage drop throttles current via
+        // the total path resistance, not a KVL subtraction for others).
+        const bias = this.semiBias(c);
+        if (bias !== 'off') {
+          if (term(c.id, 'a') === t) out.push([term(c.id, 'k'), SEMI_R]);
+          else if (term(c.id, 'k') === t) out.push([term(c.id, 'a'), SEMI_R]);
+        }
+      } else if (c.type === 'transistor') {
+        // Base-driven C-E switch: closed when the B-E junction is forward
+        // biased (NPN) / E-B (PNP); base itself never conducts.
+        if (this.semiBias(c) !== 'off') {
+          if (term(c.id, 'c') === t) out.push([term(c.id, 'e'), SEMI_R]);
+          else if (term(c.id, 'e') === t) out.push([term(c.id, 'c'), SEMI_R]);
+        }
       } else if (c.type === 'ldr') {
         const r = ldrOhms(Number(c.params.lux ?? 1000));
         if (term(c.id, 'p1') === t) out.push([term(c.id, 'p2'), r]);
@@ -297,6 +327,7 @@ export class Netlist {
   private reachSources(from: string): Array<{ src: Source; r: number; at: string }> {
     const dist = new Map<string, number>();
     dist.set(from, 0);
+    const through = new Set<string>(); // cathode nets reached forward through a LED
     const open: Array<{ t: string; r: number }> = [{ t: from, r: 0 }];
     while (open.length) {
       open.sort((a, b) => a.r - b.r);
@@ -304,7 +335,25 @@ export class Netlist {
       if ((dist.get(t) ?? Infinity) < r) continue;
       const dot = t.lastIndexOf('.');
       const comp = this.comps.get(t.slice(0, dot));
-      if (comp && (comp.type === 'led' || comp.type === 'buzzer') && t !== from) continue;
+      if (comp && (comp.type === 'led' || comp.type === 'buzzer') && t !== from && !through.has(t)) {
+        // Endpoints are searched TO, never through - but entering at the
+        // ANODE is the forward direction, so the cathode net stays visible
+        // (lets a series diode / Zener feed a load behind it; the ~2 V drop
+        // is deliberately not modelled, same fudge as every other junction).
+        const pin = t.slice(dot + 1);
+        const out = pin === (comp.type === 'led' ? 'a' : '+')
+          ? term(comp.id, comp.type === 'led' ? 'k' : '-')
+          : null;
+        if (out) {
+          through.add(out);
+          const nr = r + 1;
+          if ((dist.get(out) ?? Infinity) > nr) {
+            dist.set(out, nr);
+            open.push({ t: out, r: nr });
+          }
+        }
+        continue;
+      }
       for (const [to, res] of this.links(t)) {
         const nr = r + res;
         if ((dist.get(to) ?? Infinity) <= nr) continue;
@@ -369,6 +418,48 @@ export class Netlist {
       leds.set(c.id, state);
     }
 
+    // --- semiconductor states (F15) ---
+    const semis = new Map<string, SemiState>();
+    for (const c of this.comps.values()) {
+      if (c.type !== 'diode' && c.type !== 'zener' && c.type !== 'transistor') continue;
+      const mode = this.semiBias(c);
+      const state: SemiState = { on: mode !== 'off', burnt: false, mode, currentMa: 0 };
+      if (state.on) {
+        // current through the conducting junction: the far terminal pair,
+        // probe WITHOUT the guard so the path resistance is counted
+        let from = term(c.id, 'a');
+        let to = term(c.id, 'k');
+        let vDrop = mode === 'rev' ? Number(c.params.vz ?? 5.1) : DIODE_VF;
+        if (c.type === 'transistor') {
+          const npn = String(c.params.polarity ?? 'npn') !== 'pnp';
+          from = term(c.id, npn ? 'c' : 'e');
+          to = term(c.id, npn ? 'e' : 'c');
+          vDrop = VCE_SAT;
+        }
+        const src = this.bestSource(from);
+        const snk = this.bestSink(to);
+        if (src && snk) {
+          const rTotal = src.r + snk.r;
+          // only the junction itself in the path: no limiting resistor
+          if (rTotal <= SEMI_R + 0.5) {
+            state.burnt = true;
+            state.currentMa = BURN_MA * 10;
+          } else {
+            state.currentMa = Math.max(0, ((src.src.v - snk.src.v - vDrop) / rTotal) * 1000);
+            state.burnt = state.currentMa > BURN_MA;
+          }
+        }
+        if (state.burnt) {
+          faults.push({
+            kind: 'overcurrent',
+            net: from,
+            message: `${c.id} is cooking: ${Math.round(state.currentMa)} mA through it with no current-limiting resistor`,
+          });
+        }
+      }
+      semis.set(c.id, state);
+    }
+
     // --- net levels, MCU pin reads, shorts ---
     const netSources = new Map<string, Array<Source & { at: string }>>();
     const terminals = new Set<string>();
@@ -419,7 +510,7 @@ export class Netlist {
       }
     }
 
-    return { leds, pinLevels, externals, faults, netOf, netVoltage };
+    return { leds, semis, pinLevels, externals, faults, netOf, netVoltage };
   }
 
   /** True when both terminals join through wires / closed switches. */
@@ -451,6 +542,43 @@ export class Netlist {
     }
   }
 
+  private semiGuard = new Set<string>();
+
+  /**
+   * Junction state of a diode / zener / transistor, probed the way the relay
+   * coil probes itself: sources reachable at the terminals, re-entrancy
+   * treated as "off". Returns the conduction mode for links() and resolve().
+   */
+  semiBias(c: ComponentDef): 'fwd' | 'rev' | 'off' {
+    if (this.semiGuard.has(c.id)) return 'off';
+    this.semiGuard.add(c.id);
+    try {
+      const R_MAX = 100_000;
+      if (c.type === 'diode' || c.type === 'zener') {
+        const hi = this.bestSource(term(c.id, 'a'));
+        const lo = this.bestSink(term(c.id, 'k'));
+        if (hi && lo && hi.r <= R_MAX && lo.r <= R_MAX && hi.src.v - lo.src.v - DIODE_VF > 0.05) return 'fwd';
+        if (c.type === 'zener') {
+          // reverse: cathode high, anode low, difference at or above Vz
+          const rk = this.bestSource(term(c.id, 'k'));
+          const ra = this.bestSink(term(c.id, 'a'));
+          const vz = Number(c.params.vz ?? 5.1);
+          if (rk && ra && rk.r <= R_MAX && ra.r <= R_MAX && rk.src.v - ra.src.v >= vz) return 'rev';
+        }
+        return 'off';
+      }
+      if (c.type === 'transistor') {
+        const npn = String(c.params.polarity ?? 'npn') !== 'pnp';
+        const hi = this.bestSource(term(c.id, npn ? 'b' : 'e'));
+        const lo = this.bestSink(term(c.id, npn ? 'e' : 'b'));
+        return hi && lo && hi.src.v - lo.src.v > DIODE_VF ? 'fwd' : 'off';
+      }
+      return 'off';
+    } finally {
+      this.semiGuard.delete(c.id);
+    }
+  }
+
   /**
    * Voltage a high-impedance ADC input would see at this terminal:
    * Thevenin blend of the strongest source and sink with their path
@@ -479,6 +607,9 @@ export class Netlist {
     switch (c.type) {
       case 'resistor': return ['p1', 'p2'];
       case 'led': return ['a', 'k'];
+      case 'diode': return ['a', 'k'];
+      case 'zener': return ['a', 'k'];
+      case 'transistor': return ['c', 'b', 'e'];
       case 'button': return ['p1', 'p2'];
       case 'buzzer': return ['+', '-'];
       case 'pot': return ['p1', 'w', 'p2'];

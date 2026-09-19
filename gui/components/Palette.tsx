@@ -10,6 +10,7 @@ interface Item {
   label: string;
   hint: string;
   glyph: string;
+  params?: Record<string, unknown>;
 }
 
 const GROUPS: Array<{ title: string; items: Item[] }> = [
@@ -23,6 +24,15 @@ const GROUPS: Array<{ title: string; items: Item[] }> = [
     title: 'Power',
     items: [
       { type: 'battery', label: 'Battery', hint: 'independent source; dbl-click to set voltage', glyph: '⎓' },
+    ],
+  },
+  {
+    title: 'Semiconductors',
+    items: [
+      { type: 'diode', label: 'Diode 1N4148', hint: 'lets current one way; blocks reverse', glyph: '\u25B6|' },
+      { type: 'zener', label: 'Zener diode', hint: 'clamps reverse voltage; dbl-click sets Vz', glyph: '\u25B6Z' },
+      { type: 'transistor', label: 'Transistor NPN', hint: 'BC547; base drives the collector-emitter switch', glyph: '\u22A2' },
+      { type: 'transistor', label: 'Transistor PNP', hint: 'BC557; high-side switch, active-LOW base', glyph: '\u22A3', params: { polarity: 'pnp' } },
     ],
   },
   {
@@ -76,6 +86,7 @@ export function Palette() {
                 e.dataTransfer.setData(COMPONENT_MIME, it.type);
                 e.dataTransfer.effectAllowed = 'copy';
                 dragState.type = it.type;
+                dragState.params = it.params;
               }}
               onDragEnd={() => {
                 dragState.type = null;

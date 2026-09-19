@@ -28,8 +28,11 @@ bench, `verify9` the project autosave round-trip).
    canvas: board, LED (symbol ships with its series resistor, pre-wired),
    resistor, capacitor, button, buzzer, battery, plus the ESPHome-style part
    library: **potentiometer, LDR, DHT11/22, SG90 servo, relay (NO/NC), SSD1306
-   OLED, WS2812 NeoPixel strip, HC-SR04 ultrasonic ranger**. The palette is
-   grouped by function (Board, Power, Passive, Outputs, Inputs, Displays).
+   OLED, WS2812 NeoPixel strip, HC-SR04 ultrasonic ranger**, plus discrete
+   semiconductors: **1N4148 diode, Zener diode (dbl-click sets Vz), BC547 NPN
+   and BC557 PNP transistors** (base-driven collector-emitter switches, a
+   documented approximation - not SPICE). The palette is grouped by function
+   (Board, Power, Semiconductors, Passive, Outputs, Inputs, Displays).
    Preset examples drop these already wired to the right pins.
 2. **Wire pins** - press on a pin dot and drag to another pin. Wires are
    orthogonal and route *around* component bodies and the board (an A\*
@@ -37,6 +40,9 @@ bench, `verify9` the project autosave round-trip).
    wire segment sideways** to pin a manual route; **Alt+click** a wire
    restores auto-routing. Wires that cross without being connected get a hop
    at the crossing point; wires that meet on one net get a solder dot.
+   **Right-click a wire** to colour it from a 12-colour palette; by default
+   wires paint themselves by net role - power rails red, GND white, signal
+   nets green (the automatic mode is one click back).
    Double-click a wire to delete it; `Del` removes selected components (with
    connected wires) after a confirm. **Double-click a component** to open its
    properties dialog (resistance, capacitance, LED forward voltage, battery
@@ -46,7 +52,10 @@ bench, `verify9` the project autosave round-trip).
    dragging empty space pans. Deleted the board? Drop a new one from the top of
    the palette (*Board*).
 3. **Write the sketch** - Arduino subset in the editor: `setup()/loop()`,
-   `pinMode/digitalWrite/digitalRead/analogWrite`, `delay/delayMicroseconds`,
+   `pinMode/digitalWrite/digitalRead/analogWrite`, `delay/delayMicroseconds`.
+   The panel header carries **`↓ .ino`** (download the active sketch as
+   `<device-name>.ino`) and **`↑ .ino`** (load a `.ino`/`.txt` file into the
+   active device), so real Arduino files round-trip with the emulator:
    `Serial.begin/print/println/printf/write`, `millis/micros`,
    `timerAlarmWrite/timerAlarmEnable` (cooperative ISRs), `String/map/min/max...`
    - and the part-library API (plain C-style functions, no classes):

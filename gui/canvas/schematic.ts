@@ -84,6 +84,21 @@ export function footprintFor(type: string, params: Record<string, unknown>): Foo
         pins: [{ name: 'a', x: 0, y: 0 }, { name: 'k', x: PIN_GAP, y: 0 }],
         body: { x: -6, y: -14, w: PIN_GAP + 12, h: 28 },
       };
+    case 'diode':
+    case 'zener':
+      return {
+        pins: [{ name: 'a', x: 0, y: 0 }, { name: 'k', x: PIN_GAP, y: 0 }],
+        body: { x: -8, y: -16, w: PIN_GAP + 16, h: 32 },
+      };
+    case 'transistor':
+      return {
+        pins: [
+          { name: 'b', x: 0, y: 0 },
+          { name: 'c', x: PIN_GAP, y: -PIN_GAP },
+          { name: 'e', x: PIN_GAP, y: PIN_GAP },
+        ],
+        body: { x: -8, y: -PIN_GAP - 12, w: PIN_GAP + 20, h: 2 * PIN_GAP + 24 },
+      };
     case 'resistor':
       return {
         pins: [{ name: 'p1', x: 0, y: 0 }, { name: 'p2', x: PIN_GAP, y: 0 }],

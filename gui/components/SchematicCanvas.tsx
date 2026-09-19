@@ -520,6 +520,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
     e.preventDefault();
     ghostRef.current = null;
     dragState.type = null;
+    dragState.params = undefined;
     const type = e.dataTransfer.getData(COMPONENT_MIME);
     if (!type) return;
     const rect = canvasRef.current!.getBoundingClientRect();
@@ -531,6 +532,9 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
       button: {},
       buzzer: {},
       battery: { volts: 9 },
+      diode: { forwardV: 0.7 },
+      zener: { vz: 5.1 },
+      transistor: { polarity: 'npn' },
       pot: { ratio: 0.5 },
       ldr: { lux: 300 },
       cap: { uf: 100 },
@@ -551,7 +555,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
         onEdit();
         return;
       }
-      const params = { ...(defaults[type] ?? {}) };
+      const params: Record<string, unknown> = { ...(defaults[type] ?? {}), ...(dragState.params ?? {}) };
       if (type === 'led') {
         // LED ships with a series resistor baked into the symbol params;
         // the netlist models the LED itself, so drop a resistor beside it.

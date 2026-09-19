@@ -8,4 +8,4 @@ export const COMPONENT_MIME = 'application/x-component';
  * The dragged part type, mirrored in memory: browsers hide dataTransfer
  * payloads from dragover, but palette and canvas share this window.
  */
-export const dragState: { type: string | null } = { type: null };
+export const dragState: { type: string | null; params?: Record<string, unknown> } = { type: null };

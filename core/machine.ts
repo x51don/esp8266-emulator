@@ -347,7 +347,7 @@ export class Esp8266Machine implements LanHost {
 
   circuit(): ResolveResult {
     return this.lastCircuit ?? {
-      leds: new Map(), pinLevels: new Map(), externals: new Map(),
+      leds: new Map(), semis: new Map(), pinLevels: new Map(), externals: new Map(),
       faults: [], netOf: new Map(), netVoltage: new Map(),
     };
   }

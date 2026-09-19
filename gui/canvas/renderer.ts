@@ -334,6 +334,8 @@ function drawComponent(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedC
 
   if (c.type === 'board') drawBoard(ctx, s, c);
   else if (c.type === 'led') drawLed(ctx, s, c);
+  else if (c.type === 'diode' || c.type === 'zener') drawDiode(ctx, s, c);
+  else if (c.type === 'transistor') drawTransistor(ctx, s, c);
   else if (c.type === 'resistor') drawResistor(ctx, s, c, body);
   else if (c.type === 'button') drawButton(ctx, s, c, body);
   else if (c.type === 'buzzer') drawBox(ctx, s, body, 'BUZZ', '#4a3a5a');
@@ -650,6 +652,152 @@ function netTerminal(s: RenderScene, docTerminal: string): string {
   return s.schematic.component(comp)?.type === 'board'
     ? `mcu${docTerminal.slice(dot)}`
     : docTerminal;
+}
+
+/** Diode / Zener: triangle + bar along the a->k axis, Z-bend for the Zener. */
+function drawDiode(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent): void {
+  const a = s.schematic.pinWorld({ comp: c.id, pin: 'a' });
+  const k = s.schematic.pinWorld({ comp: c.id, pin: 'k' });
+  const qa = s.viewport.worldToScreen(a.x, a.y);
+  const qk = s.viewport.worldToScreen(k.x, k.y);
+  const state = s.circuit?.semis.get(c.id);
+  const on = state?.on ?? false;
+  const burnt = state?.burnt ?? false;
+
+  ctx.save();
+  ctx.translate(qa.x, qa.y);
+  ctx.rotate(Math.atan2(qk.y - qa.y, qk.x - qa.x));
+  const len = Math.hypot(qk.x - qa.x, qk.y - qa.y);
+  const r = Math.max(5, len * 0.2);
+  const cx = len / 2;
+
+  if (on && !burnt) {
+    const glow = ctx.createRadialGradient(cx, 0, 1, cx, 0, r * 3.4);
+    glow.addColorStop(0, 'rgba(120,255,170,0.35)');
+    glow.addColorStop(1, 'rgba(120,255,170,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(cx, 0, r * 3.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const stroke = burnt ? '#c05050' : on ? '#8ff0b0' : '#8494ab';
+  ctx.strokeStyle = stroke;
+  ctx.fillStyle = burnt ? '#3a1d1d' : on ? 'rgba(143,240,176,0.35)' : 'rgba(132,148,171,0.12)';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath(); // leads
+  ctx.moveTo(0, 0);
+  ctx.lineTo(cx - r, 0);
+  ctx.moveTo(cx + r, 0);
+  ctx.lineTo(len, 0);
+  ctx.stroke();
+  ctx.beginPath(); // triangle
+  ctx.moveTo(cx - r, -r);
+  ctx.lineTo(cx - r, r);
+  ctx.lineTo(cx + r * 0.15, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath(); // cathode bar (+ Z-bends for the Zener)
+  ctx.moveTo(cx + r * 0.15, -r * 1.1);
+  ctx.lineTo(cx + r * 0.15, r * 1.1);
+  if (c.type === 'zener') {
+    ctx.moveTo(cx + r * 0.15 - r * 0.55, -r * 1.1);
+    ctx.lineTo(cx + r * 0.15, -r * 0.35);
+    ctx.moveTo(cx + r * 0.15, r * 0.35);
+    ctx.lineTo(cx + r * 0.15 + r * 0.55, r * 1.1);
+  }
+  ctx.stroke();
+  if (state?.mode === 'rev') {
+    ctx.fillStyle = '#9fb6d4'; // breakdown direction hint (k -> a)
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('\u2264Vz', cx, -r - 6);
+  }
+  ctx.restore();
+}
+
+/** Bipolar transistor: base bar, collector/emitter fans, arrow on the emitter. */
+function drawTransistor(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent): void {
+  const pb = s.schematic.pinWorld({ comp: c.id, pin: 'b' });
+  const pc = s.schematic.pinWorld({ comp: c.id, pin: 'c' });
+  const pe = s.schematic.pinWorld({ comp: c.id, pin: 'e' });
+  const qb = s.viewport.worldToScreen(pb.x, pb.y);
+  const qc = s.viewport.worldToScreen(pc.x, pc.y);
+  const qe = s.viewport.worldToScreen(pe.x, pe.y);
+  const state = s.circuit?.semis.get(c.id);
+  const on = state?.on ?? false;
+  const burnt = state?.burnt ?? false;
+  const npn = String(c.params.polarity ?? 'npn') !== 'pnp';
+
+  ctx.save();
+  // work in a frame where the base is left and C/E stack vertically
+  const mx = (qc.x + qe.x) / 2;
+  const my = (qc.y + qe.y) / 2;
+  ctx.translate(qb.x, qb.y);
+  ctx.rotate(Math.atan2(my - qb.y, mx - qb.x));
+  const span = Math.hypot(qc.x - qe.x, qc.y - qe.y) / 2; // half C-E distance
+  const bx = Math.hypot(mx - qb.x, my - qb.y); // base -> bar distance
+  const r = Math.max(9, Math.min(span * 1.35, bx * 0.8));
+  const barX = bx * 0.62;
+
+  if (on && !burnt) {
+    const glow = ctx.createRadialGradient(barX, 0, 1, barX, 0, r * 2.6);
+    glow.addColorStop(0, 'rgba(120,255,170,0.3)');
+    glow.addColorStop(1, 'rgba(120,255,170,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(barX, 0, r * 2.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const stroke = burnt ? '#c05050' : on ? '#8ff0b0' : '#8494ab';
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath(); // case circle
+  ctx.arc(barX - r * 0.15, 0, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath(); // base lead + vertical bar
+  ctx.moveTo(0, 0);
+  ctx.lineTo(barX, 0);
+  ctx.moveTo(barX, -r * 0.62);
+  ctx.lineTo(barX, r * 0.62);
+  ctx.stroke();
+  // collector: bar -> top of circle -> out
+  const topY = Math.max(-span, -r * 0.62) - r * 0.2;
+  ctx.beginPath();
+  ctx.moveTo(barX, topY * 0.55);
+  ctx.lineTo(barX + r * 0.75, topY * 1.25);
+  ctx.lineTo(mx - qb.x, topY * 1.25 > -span ? -span : topY * 1.25);
+  ctx.stroke();
+  // emitter: bar -> bottom (arrow toward the bar for PNP, away for NPN)
+  const botY = r * 0.62 + r * 0.45;
+  ctx.beginPath();
+  ctx.moveTo(barX, r * 0.45);
+  ctx.lineTo(barX + r * 0.75, botY * 1.1);
+  ctx.lineTo(mx - qb.x, Math.max(span, botY * 1.1));
+  ctx.stroke();
+  const t = 0.6; // arrow position along the emitter fan segment
+  const ax = barX + (r * 0.75 - barX) * 0 + r * 0.75 * t + barX * (1 - t);
+  const ay = r * 0.45 + (botY * 1.1 - r * 0.45) * t;
+  const dirx = r * 0.75 / Math.hypot(r * 0.75, botY * 1.1 - r * 0.45);
+  const diry = (botY * 1.1 - r * 0.45) / Math.hypot(r * 0.75, botY * 1.1 - r * 0.45);
+  const sgn = npn ? 1 : -1; // NPN arrow points away from the base (down-out)
+  const alen = 4.5;
+  const px = -diry * sgn;
+  const py = dirx * sgn;
+  ctx.beginPath();
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(ax - sgn * dirx * alen + px * alen * 0.7, ay - sgn * diry * alen + py * alen * 0.7);
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(ax - sgn * dirx * alen - px * alen * 0.7, ay - sgn * diry * alen - py * alen * 0.7);
+  ctx.stroke();
+
+  ctx.fillStyle = '#9fb6d4';
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(npn ? 'BC547' : 'BC557', barX - r * 0.15, r + 10);
+  ctx.restore();
 }
 
 function drawLed(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent): void {
