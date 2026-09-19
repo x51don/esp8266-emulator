@@ -141,3 +141,155 @@ describe('EEPROM (F6)', () => {
     expect(log(m).split('\n')).toEqual(['255', '0']);
   });
 });
+
+/**
+ * F2.2: EEPROM is a flash sector - a RAM mirror plus commit() = one P/E
+ * cycle, and the sector is rated for 100 000 erase/write cycles.
+ */
+describe('flash sector + wear limit (F2.2)', () => {
+  const READ100 = `
+    void setup() {
+      Serial.begin(9600);
+      EEPROM.begin(512);
+      Serial.print("v=");
+      Serial.println(EEPROM.read(100));
+    }
+    void loop() { delay(10); }
+  `;
+
+  it('an uncommitted write is RAM-only: visible now, gone after reboot', () => {
+    const m = boot(`
+      void setup() {
+        Serial.begin(9600);
+        EEPROM.begin(512);
+        EEPROM.write(100, 42);
+        Serial.print("v=");
+        Serial.println(EEPROM.read(100)); // the RAM mirror already shows it
+      }
+      void loop() { delay(10); }
+    `);
+    m.advance(20);
+    expect(log(m)).toContain('v=42');
+    // a cold reboot: load() powers the board down, run() boots setup again
+    m.load(READ100); // the mirror is RAM - a reboot must drop it
+    m.run(); m.advance(20);
+    expect(log(m)).toContain('v=255');
+  });
+
+  it('a committed write survives the reboot', () => {
+    const m = boot(`
+      void setup() {
+        Serial.begin(9600);
+        EEPROM.begin(512);
+        EEPROM.write(100, 42);
+        EEPROM.commit();
+      }
+      void loop() { delay(10); }
+    `);
+    m.advance(20);
+    m.load(READ100);
+    m.run(); m.advance(20);
+    expect(log(m)).toContain('v=42');
+  });
+
+  it('commit on a clean mirror costs no P/E cycle; a real change costs exactly one', () => {
+    const m = boot(`
+      void setup() {
+        Serial.begin(9600);
+        EEPROM.begin(512);
+        Serial.println(EEPROM.commit());               // clean: true, no wear
+        EEPROM.write(0, 1);
+        EEPROM.commit();                                // one erase+write
+        Serial.println(EEPROM.commit());               // clean again
+        EEPROM.write(0, 1);                             // same value: not dirty
+        EEPROM.commit();
+      }
+      void loop() { delay(10); }
+    `);
+    m.advance(20);
+    const lines = log(m).split('\n');
+    expect(lines[0]).toBe('1');
+    expect(lines[1]).toBe('1');
+    expect(m.eepromStats().cycles).toBe(1);
+  });
+
+  // boots a fresh machine whose sector already spent `cycles` P/E cycles
+  const bootAt = (cycles: number, sketch: string) => {
+    const m = new Esp8266Machine({ board: 'wemos-d1-mini' });
+    machine = m;
+    m.load(sketch);
+    m.eepromSetCycles(cycles);
+    m.run();
+    return m;
+  };
+  const WRITE_COMMIT = (addr: number, v: number) => `
+    void setup() {
+      Serial.begin(9600);
+      EEPROM.begin(512);
+      EEPROM.write(${addr}, ${v});
+      Serial.print("c=");
+      Serial.println(EEPROM.commit());
+    }
+    void loop() { delay(10); }
+  `;
+
+  it('the 100001st commit fails and nothing persists past the wear-out', () => {
+    const m = bootAt(100000, WRITE_COMMIT(100, 42)); // sector spent its rated life
+    m.advance(20);
+    expect(log(m)).toContain('c=0');
+    expect(m.eepromStats().worn).toBe(true);
+    m.load(READ100);
+    m.run();
+    m.advance(20);
+    expect(log(m)).toContain('v=255'); // the sector stopped accepting data
+  });
+
+  it('wear-out lands exactly on cycle 100000: 99999 -> commit ok, next fails', () => {
+    const m = bootAt(99999, WRITE_COMMIT(100, 42));
+    m.advance(20);
+    expect(log(m)).toContain('c=1'); // the 100000th cycle is still legal
+    expect(m.eepromStats().cycles).toBe(100000);
+    m.load(WRITE_COMMIT(200, 7));
+    m.run();
+    m.advance(20);
+    expect(log(m)).toContain('c=0'); // 100001st: the sector is done
+  });
+
+  it('erase() is RAM-side: lost on reboot until a commit persists it', () => {
+    const m = boot(`
+      void setup() {
+        Serial.begin(9600);
+        EEPROM.begin(512);
+        EEPROM.write(100, 42);
+        EEPROM.commit();
+      }
+      void loop() { delay(10); }
+    `);
+    m.advance(20);
+    m.load(`
+      void setup() {
+        Serial.begin(9600);
+        EEPROM.begin(512);
+        EEPROM.erase();
+      }
+      void loop() { delay(10); }
+    `);
+    m.run(); m.advance(20); // erase never committed
+    m.load(READ100);
+    m.run(); m.advance(20);
+    expect(log(m)).toContain('v=42'); // flash still holds it
+    m.load(`
+      void setup() {
+        Serial.begin(9600);
+        EEPROM.begin(512);
+        EEPROM.erase();
+        EEPROM.commit();
+      }
+      void loop() { delay(10); }
+    `);
+    m.run(); m.advance(20);
+    m.load(READ100);
+    m.run(); m.advance(20);
+    expect(log(m)).toContain('v=255');
+  });
+});

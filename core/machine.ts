@@ -58,6 +58,8 @@ interface Alarm {
 const PUMP_SLICE = 5000; // tick yields before the CPU hands the world a turn
 /** F2.1: hardware ISR entry latency (~40 cycles @80 MHz + context save). */
 const ISR_LATENCY_US = 2;
+/** F2.2: rated erase/write endurance of the flash sector holding EEPROM. */
+const EEPROM_MAX_CYCLES = 100_000;
 /**
  * Interpreter yields allowed per advance() call. The interpreter is the chip
  * speed: when a sketch burns this budget the simulation slows down relative
@@ -170,7 +172,17 @@ export class Esp8266Machine implements LanHost {
   private wakeAt: number | null = null;
   /** F6: the emulated flash sector; survives run()/restart, not the GC. */
   private eeprom = new Uint8Array(4096).fill(0xff);
-  /** bumps on every commit() - the GUI uses it to mark a project dirty */
+  /** F2.2: volatile RAM mirror created by EEPROM.begin(); committed to
+   *  `eeprom` (the flash) only by commit(). Reloaded from flash every
+   *  begin(), so an uncommitted write is lost on reboot - like the chip. */
+  private eepromImage: Uint8Array | null = null;
+  /** F2.2: dirty mirror (differs from flash); set by write/erase. */
+  private eepromModified = false;
+  /** F2.2: erase/write cycles spent on the sector; > EEPROM_MAX_CYCLES wears
+   *  it out (commits fail). Survives run()/restart. */
+  eepromCycles = 0;
+  eepromWorn = false;
+  /** bumps on every successful commit() - the GUI uses it to mark a project dirty */
   eepromDirty = 0;
   /** -1 = unlimited; otherwise remaining interpreter yields for this advance. */
   private yieldBudget = -1;
@@ -281,6 +293,8 @@ export class Esp8266Machine implements LanHost {
     this.pinStress.clear(); // fresh electrical conditions (damage persists)
     this.netlist.resetTime(); // pending button chatter dies with the run
     this.interruptsEnabled = true; // a reboot re-enables the interrupt controller
+    this.eepromImage = null; // RAM mirror is volatile; setup() re-begins it
+    this.eepromModified = false;
     this.serialLog = [];
     this.alarms.clear();
     this.wifi.connectAt = null;
@@ -500,69 +514,117 @@ export class Esp8266Machine implements LanHost {
 
   eepromRestore(bytes: Uint8Array): void {
     this.eeprom.set(bytes.subarray(0, Math.min(bytes.length, 4096)));
+    this.eepromImage = null; // the mirror is now stale against the flash
+  }
+
+  /** F2.2: flash-sector telemetry for the GUI (wear meter, dirty light). */
+  eepromStats(): { cycles: number; worn: boolean; modified: boolean } {
+    return { cycles: this.eepromCycles, worn: this.eepromWorn, modified: this.eepromModified };
+  }
+
+  /** Test/diagnostic hook: pretend the sector already spent `n` P/E cycles. */
+  eepromSetCycles(n: number): void {
+    this.eepromCycles = Math.max(0, Math.floor(n));
+    this.eepromWorn = this.eepromCycles > EEPROM_MAX_CYCLES;
   }
 
   private eepromCall(meth: string, args: HostValue[]): HostResult {
     const num = (v: HostValue | undefined): number =>
       typeof v === 'number' ? v : Number(v ?? 0) || 0;
     const ok = (v: number) => ({ value: v });
-    const rd = (addr: number): number =>
-      addr >= 0 && addr < 4096 ? this.eeprom[addr] : 0xff;
-    const dv = new DataView(this.eeprom.buffer);
+    // F2.2: after begin() every access goes through the volatile RAM mirror
+    // (exactly like the core's _data buffer); without begin() the emulator
+    // stays permissive and touches the flash directly.
+    const img = (): Uint8Array => (this.eepromImage ??= this.eeprom.slice());
+    const markDirty = (): void => { this.eepromModified = true; };
+    const rd = (addr: number): number => {
+      const b = this.eepromImage ?? this.eeprom;
+      return addr >= 0 && addr < 4096 ? b[addr] : 0xff;
+    };
+    const view = (): DataView => new DataView((this.eepromImage ?? this.eeprom).buffer);
     switch (meth) {
-      case 'begin':
-        return ok(args.length === 0 || (num(args[0]) > 0 && num(args[0]) <= 4096) ? 1 : 0);
+      case 'begin': {
+        if (args.length > 0 && !(num(args[0]) > 0 && num(args[0]) <= 4096)) return ok(0);
+        // the core re-reads the flash sector on every begin(), dropping any
+        // uncommitted mirror from an earlier begin
+        this.eepromImage = this.eeprom.slice();
+        this.eepromModified = false;
+        return ok(1);
+      }
       case 'read':
         return ok(rd(num(args[0])));
       case 'write': {
         const a = num(args[0]);
-        if (a >= 0 && a < 4096) this.eeprom[a] = Math.trunc(num(args[1])) & 0xff;
+        const v = Math.trunc(num(args[1])) & 0xff;
+        const b = img();
+        if (a >= 0 && a < 4096 && b[a] !== v) { // the core flags dirty per byte
+          b[a] = v;
+          markDirty();
+        }
         return ok(0);
       }
-      case 'commit':
+      case 'commit': {
+        // the core: clean mirror -> true without touching flash (no wear)
+        if (!this.eepromModified) { this.eepromDirty++; return ok(1); }
+        // worn sector: erase/write silently stops persisting anything
+        if (this.eepromCycles >= EEPROM_MAX_CYCLES) { this.eepromWorn = true; return ok(0); }
+        this.eepromCycles++; // one erase+write of the whole sector = one P/E cycle
+        this.eeprom.set(this.eepromImage ?? this.eeprom);
+        this.eepromModified = false;
         this.eepromDirty++;
         return ok(1);
+      }
       case 'length':
         return ok(4096);
       case 'erase': case 'clear':
-        this.eeprom.fill(0xff);
+        // RAM-side erase: only a commit() turns it into flash wear
+        img().fill(0xff);
+        markDirty();
         return ok(1);
       case 'readString': {
         const a = num(args[0]);
         if (a < 0 || a + 4 > 4096) return { value: '' };
+        const dv = view();
         const n = dv.getUint32(a, true);
         if (n > 4096 - a - 4) return { value: '' }; // erased (0xFFFFFFFF) or corrupt
-        return { value: String.fromCharCode(...this.eeprom.subarray(a + 4, a + 4 + n)) };
+        const b = this.eepromImage ?? this.eeprom;
+        return { value: String.fromCharCode(...b.subarray(a + 4, a + 4 + n)) };
       }
       case 'writeString': {
         const a = num(args[0]);
         const text = typeof args[1] === 'string' && !args[1].startsWith('@') ? args[1] : '';
         if (a < 0 || a + 4 + text.length > 4096) return ok(0);
-        dv.setUint32(a, text.length, true);
-        for (let i = 0; i < text.length; i++) this.eeprom[a + 4 + i] = text.charCodeAt(i) & 0xff;
+        const b = img();
+        new DataView(b.buffer).setUint32(a, text.length, true);
+        for (let i = 0; i < text.length; i++) b[a + 4 + i] = text.charCodeAt(i) & 0xff;
+        markDirty();
         return ok(1);
       }
       case 'readInt': {
         const a = num(args[0]);
-        return a >= 0 && a + 4 <= 4096 ? ok(dv.getInt32(a, true)) : ok(-1);
+        return a >= 0 && a + 4 <= 4096 ? ok(view().getInt32(a, true)) : ok(-1);
       }
       case 'writeInt': {
         const a = num(args[0]);
-        if (a >= 0 && a + 4 <= 4096) dv.setInt32(a, Math.trunc(num(args[1])) | 0, true);
+        if (a >= 0 && a + 4 <= 4096) { img(); new DataView((this.eepromImage ?? this.eeprom).buffer).setInt32(a, Math.trunc(num(args[1])) | 0, true); markDirty(); }
         return ok(0);
       }
       case 'readFloat': case 'readDouble': {
         const a = num(args[0]);
         const size = meth === 'readFloat' ? 4 : 8;
         if (a < 0 || a + size > 4096) return ok(0);
+        const dv = view();
         return ok(meth === 'readFloat' ? dv.getFloat32(a, true) : dv.getFloat64(a, true));
       }
       case 'writeFloat': case 'writeDouble': {
         const a = num(args[0]);
         const size = meth === 'writeFloat' ? 4 : 8;
         if (a >= 0 && a + size <= 4096) {
+          const b = img();
+          const dv = new DataView(b.buffer);
           if (meth === 'writeFloat') dv.setFloat32(a, num(args[1]), true);
           else dv.setFloat64(a, num(args[1]), true);
+          markDirty();
         }
         return ok(0);
       }
@@ -1134,6 +1196,9 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
     this.attachments.clear();
     this.isrPrev.clear();
     this.httpInbox = [];
+    // F2.2: power down also drops the volatile EEPROM mirror
+    this.eepromImage = null;
+    this.eepromModified = false;
   }
 
   // ---------- registers ----------

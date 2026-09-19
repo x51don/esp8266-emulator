@@ -222,7 +222,19 @@ Po commit > 100_000 -> worn: commit zwraca 0, zapisy nie utrwalają się.
 `eepromStats()` API. Persist przez save/restore zostaje (to projekty).
 Testy: red = restart kasuje niezcommitowane / 100001 commit zwraca 0.
 
-**Status.** TODO
+**Status.** DONE 2026-09-19 (źródła rdzenia ściągnięte do `.ref/eeprom_*`).
+`eeprom` = komórki flash (4 KiB sektor, przeżywa restarty, to persistuje
+save/restore); `eepromImage` = wolutylny mir RAM tworzony przez `begin()`
+(rdzeń przy każdym begin() wczytuje sektor od nowa - tak samo tu). `write`
+oznacza brud tylko przy zmianie baita (rdzeń: `if (*pData != value)`),
+`commit()`: czysty mir -> 1 bez cyklu P/E (rdzeń: `if(!_dirty) return true`),
+brudny -> `eepromCycles++` i `cells := image`; po wyczerpaniu
+`EEPROM_MAX_CYCLES = 100_000` commit zwraca 0 i nic nie zapisuje
+(`eepromWorn`). `erase()` = RAM-side (wymaga commitu). API maszynowe:
+`eepromStats() {cycles, worn, modified}`, `eepromSetCycles(n)` (test/diag).
+Mir spada przy halt/run (wolutylny). Odstępstwa: odczyt bez begin() dozwolony
+(rdzeń zwraca 0), `length()` stałe 4096 (rdzeń: rozmiar z begin()).
+Testy: `tests/eeprom.test.ts` +6 (11/11); F6 bez zmian.
 
 ---
 
@@ -337,3 +349,4 @@ trasowania w LAN).
 - 2026-09-19 | F1.2 limity prądowe + palenie pinu | tests/electrical.test.ts 6x red -> green; suite 499/499 | model termiczny: 1 s przeciążenia = pad martwy; over-volt 5V drutem = natychmiast.
 - 2026-09-19 | F1.3 Vf diody + drganie styków | tests/debounce.test.ts 8x red -> green; suite 507/507 | bounce oknem czasu wirtualnego (determ.); zbocza w jednym advance scalą się do 1 ISR; +digitalPinToInterrupt.
 - 2026-09-19 | F2.1 przerwania: wywłaszczenie + latencja 2 us + maska | tests/irq.test.ts 6x red -> green; suite 513/513 | ISR startuje przy yield głównego kodu (busy loop też); pending-bit scala krawędzie; timer i Ticker wspólną kolejką.
+- 2026-09-19 | F2.2 EEPROM = sektor flash: mir RAM + cykle P/E | tests/eeprom.test.ts 5x red -> green; suite 519/519 | commit czystego = bez cyklu; 100001 commit = 0 i worn; erase RAM-side; eepromStats/eepromSetCycles.
