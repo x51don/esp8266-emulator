@@ -30,7 +30,7 @@ export interface Board {
 }
 
 // NodeMCU-compatible mapping shared by Wemos D1 mini and NodeMCU v3.
-const D_PIN_TO_GPIO: Record<string, number> = {
+export const D_PIN_TO_GPIO: Record<string, number> = {
   D0: 16, D1: 5, D2: 4, D3: 0, D4: 2, D5: 14, D6: 12, D7: 13, D8: 15,
 };
 

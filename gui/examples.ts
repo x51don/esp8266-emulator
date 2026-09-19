@@ -44,7 +44,7 @@ export const EXAMPLE_SKETCHES: Record<string, string> = {
 
 export const EXAMPLE_NAMES = Object.keys(EXAMPLE_SKETCHES);
 
-function pinWorld(sc: Schematic, pin: string): Pt & { dir: number } {
+export function pinWorld(sc: Schematic, pin: string): Pt & { dir: number } {
   const board = sc.boardComponent();
   if (!board) throw new Error('preset needs a board');
   const p = sc.pinWorld({ comp: board.id, pin });
@@ -54,7 +54,7 @@ function pinWorld(sc: Schematic, pin: string): Pt & { dir: number } {
 }
 
 /** pin -> resistor -> LED -> GND, parts laid out outside the board edge. */
-function addLedChain(sc: Schematic, pin: string): void {
+export function addLedChain(sc: Schematic, pin: string): void {
   const board = sc.boardComponent()!;
   const p = pinWorld(sc, pin);
   const r = sc.add('resistor', p.x + p.dir * 160, p.y, { resistance: 220 });
@@ -64,7 +64,7 @@ function addLedChain(sc: Schematic, pin: string): void {
   wire(sc, { comp: led.id, pin: 'k' }, { comp: board.id, pin: 'GND' });
 }
 
-function addButton(sc: Schematic, pin: string): void {
+export function addButton(sc: Schematic, pin: string): void {
   const board = sc.boardComponent()!;
   const p = pinWorld(sc, pin);
   const b = sc.add('button', p.x + p.dir * 160, p.y, {});
@@ -73,7 +73,7 @@ function addButton(sc: Schematic, pin: string): void {
 }
 
 /** Module whose left-column pins sit at local y = 0, 20, 40 (vcc/data/gnd...). */
-function sideModule(
+export function sideModule(
   sc: Schematic, type: string, pin: string, dist: number,
   params: Record<string, unknown> = {},
 ): { comp: PlacedComponent; at: (localY: number) => Pt } {
@@ -82,7 +82,7 @@ function sideModule(
   return { comp, at: (localY: number) => ({ x: comp.x, y: comp.y + localY }) };
 }
 
-function addPot(sc: Schematic, pin: string, dist = 200): void {
+export function addPot(sc: Schematic, pin: string, dist = 200): void {
   const board = sc.boardComponent()!;
   const p = pinWorld(sc, pin);
   const pot = sc.add('pot', p.x + p.dir * dist, p.y + 40, { ratio: 0.5 });
@@ -91,7 +91,7 @@ function addPot(sc: Schematic, pin: string, dist = 200): void {
   wire(sc, { comp: pot.id, pin: 'p2' }, { comp: board.id, pin: 'GND' });
 }
 
-function addDht(sc: Schematic, pin: string): void {
+export function addDht(sc: Schematic, pin: string): void {
   const board = sc.boardComponent()!;
   const m = sideModule(sc, 'dht', pin, 200, { model: 'DHT22', tempC: 23.5, humPct: 61 });
   wire(sc, { comp: m.comp.id, pin: 'data' }, { comp: board.id, pin });
@@ -99,7 +99,7 @@ function addDht(sc: Schematic, pin: string): void {
   wire(sc, { comp: m.comp.id, pin: 'gnd' }, { comp: board.id, pin: 'GND' });
 }
 
-function addOled(sc: Schematic, sda: string, scl: string): void {
+export function addOled(sc: Schematic, sda: string, scl: string): void {
   const board = sc.boardComponent()!;
   const p = pinWorld(sc, '3V3');
   const oled = sc.add('oled', p.x + 240, p.y, { addr: 0x3c });
@@ -109,7 +109,7 @@ function addOled(sc: Schematic, sda: string, scl: string): void {
   wire(sc, { comp: oled.id, pin: 'scl' }, { comp: board.id, pin: scl });
 }
 
-function wire(sc: Schematic, a: { comp: string; pin: string }, b: { comp: string; pin: string }): void {
+export function wire(sc: Schematic, a: { comp: string; pin: string }, b: { comp: string; pin: string }): void {
   const comp = (id: string): PlacedComponent => {
     const c = sc.component(id);
     if (!c) throw new Error(`preset: missing component '${id}'`);

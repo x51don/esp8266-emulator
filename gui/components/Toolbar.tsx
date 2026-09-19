@@ -22,6 +22,7 @@ interface Props {
   onProjectDelete: (name: string) => void;
   onExport: () => void;
   onImportFile: (file: File) => void;
+  onAutowire: () => void;
   error: string | null;
   fault: string | null;
 }
@@ -108,6 +109,9 @@ export function Toolbar(p: Props) {
           }}
         />
       </label>
+      <button className="btn" onClick={p.onAutowire} title="rebuild the circuit from the sketch: LEDs, buttons and modules its calls imply">
+        &#9889; Auto-wire
+      </button>
       <span className="spacer" />
       {p.error && <span className="banner banner-error" title={p.error}>⚠ {p.error}</span>}
       {!p.error && p.fault && <span className="banner banner-fault" title={p.fault}>⚡ {p.fault}</span>}

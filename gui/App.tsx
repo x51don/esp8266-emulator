@@ -12,6 +12,7 @@ import { SerialMonitor } from './components/SerialMonitor';
 import { HttpPanel } from './components/HttpPanel';
 import { Toolbar } from './components/Toolbar';
 import { EXAMPLE_NAMES, EXAMPLE_SKETCHES, loadExample } from './examples';
+import { buildFromPlan, planFromSketch } from './autowire';
 import { eepromFromB64, eepromToB64, ProjectStore, type ProjectData } from './projects';
 import { lan, lanFetch } from '../core/lan';
 
@@ -292,6 +293,20 @@ export function App() {
     }
   }, [applyDoc, boardId]);
 
+  // ---- auto-wire: the sketch implies its own circuit ----
+  const onAutowire = useCallback(() => {
+    const plan = planFromSketch(sketch);
+    if (
+      !confirmOr(
+        `Generate a circuit from the sketch?\nReplaces the canvas with ${plan.length} part group(s) the code implies, wired to a fresh board.`,
+      )
+    )
+      return;
+    openProject.current = null; // generated wiring must not autosave over a project
+    const sc = buildFromPlan(plan, boardId);
+    applyDoc(sc, sketch);
+  }, [sketch, applyDoc, boardId]);
+
   // ---- projects ----
   const currentProject = useCallback(
     (): ProjectData => ({
@@ -521,11 +536,12 @@ export function App() {
       loadExample: (name: string) => {
         applyDoc(loadExample(name, boardId), EXAMPLE_SKETCHES[name]);
       },
+      autowire: onAutowire,
     };
     return () => {
       delete (window as unknown as Record<string, unknown>).__emu;
     };
-  }, [schematic, applyDoc, boardId, onAddDevice, switchDevice]);
+  }, [schematic, applyDoc, boardId, onAddDevice, switchDevice, onAutowire]);
   const machineRef = useRef(machine);
   machineRef.current = machine;
 
@@ -556,6 +572,7 @@ export function App() {
         onProjectDelete={onProjectDelete}
         onExport={onExport}
         onImportFile={onImportFile}
+        onAutowire={onAutowire}
         error={error}
         fault={fault}
       />

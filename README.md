@@ -69,6 +69,12 @@ bench, `verify9` the project autosave round-trip).
    whose data pin sits on the same net as the board pin passed in
    (`dhtReadTemperature(D4)` reads the DHT wired to D4); unwired reads return
    `-999` (DHT) or behave like a floating pin.
+   **Auto-wire** (toolbar) reads the open sketch and rebuilds the canvas from
+   it: `digitalWrite/analogWrite` pins become resistor-fed LEDs,
+   `digitalRead` pins become buttons, `analogRead` a pot on A0, and the
+   peripheral APIs (`dhtRead*`, `servoAttach`, `npSetup`, `oled*`,
+   `hcsrSetup`) drop their modules on the pins they name - including
+   `#define`/`const` aliases and bare GPIO numbers.
    *Examples* loads a sketch **with a matching wired circuit preset** (blink,
    pwm-fade, button, serial-hello, pot-serial, ldr-led, dht-oled, servo-pot,
    neopixel-chase, hcsr-serial, relay-pump, web-server, lan-server, lan-client);
