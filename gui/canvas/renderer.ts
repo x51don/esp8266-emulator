@@ -27,7 +27,11 @@ export interface RenderScene {
   running: boolean;
   selection: ReadonlySet<string>;
   hoverPin: TerminalRef | null;
+  /** Wire id under the pointer (P2 hover highlight; Del removes it). */
+  hoverWire: string | null;
   dragWire: DragWireState | null;
+  /** Palette part hovering over the canvas mid-DnD (P2 ghost preview). */
+  ghost: { type: string; x: number; y: number } | null;
   machine: Esp8266Machine | null; // state view (servos, panels, strips)
 }
 
@@ -51,12 +55,13 @@ const C = {
 };
 
 export function renderScene(ctx: CanvasRenderingContext2D, s: RenderScene): void {
-  const { width, height } = s;
   ctx.save();
-  ctx.fillStyle = C.bg;
-  ctx.fillRect(0, 0, width, height);
 
-  drawGrid(ctx, s);
+  // Background + grid come from an offscreen bitmap (P1.3) keyed by camera,
+  // size and dpr: hover/drag frames copy pixels instead of re-stroking
+  // hundreds of grid lines. The bitmap always covers the whole canvas, so
+  // the drawImage doubles as the clear.
+  drawGridCached(ctx, s);
 
   const pins = pinMap(s.schematic);
   // layer order: board bodies, wires (over the board, under small parts),
@@ -66,8 +71,38 @@ export function renderScene(ctx: CanvasRenderingContext2D, s: RenderScene): void
   for (const c of s.schematic.components.values()) if (c.type !== 'board') drawComponent(ctx, s, c);
   for (const c of s.schematic.components.values()) if (c.type === 'board') drawBoardPins(ctx, s, c);
   drawDragWire(ctx, s, pins);
+  drawGhost(ctx, s);
 
   ctx.restore();
+}
+
+let gridCanvas: HTMLCanvasElement | null = null;
+let gridSig = '';
+
+function drawGridCached(ctx: CanvasRenderingContext2D, s: RenderScene): void {
+  // the caller installs a dpr transform; read it back instead of re-deriving
+  const dpr = ctx.getTransform().a || 1;
+  const vp = s.viewport;
+  const sig = `${vp.camX}|${vp.camY}|${vp.zoom}|${s.width}|${s.height}|${dpr}`;
+  if (gridCanvas && gridSig === sig) {
+    ctx.drawImage(gridCanvas, 0, 0, s.width, s.height);
+    return;
+  }
+  if (!gridCanvas) gridCanvas = document.createElement('canvas');
+  const w = Math.max(1, Math.round(s.width * dpr));
+  const h = Math.max(1, Math.round(s.height * dpr));
+  if (gridCanvas.width !== w || gridCanvas.height !== h) {
+    gridCanvas.width = w;
+    gridCanvas.height = h;
+  }
+  const g = gridCanvas.getContext('2d');
+  if (!g) return;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = C.bg;
+  g.fillRect(0, 0, s.width, s.height);
+  drawGrid(g, s);
+  gridSig = sig;
+  ctx.drawImage(gridCanvas, 0, 0, s.width, s.height);
 }
 
 // ---------- helpers ----------
@@ -140,6 +175,16 @@ function drawWires(ctx: CanvasRenderingContext2D, s: RenderScene, pins: Map<stri
       : hot ? C.wireHot : C.wire;
     ctx.lineWidth = 2;
     const path = s.schematic.wireRoutes().get(w.id) ?? [a, b];
+    if (s.hoverWire === w.id) {
+      // hover halo: thicker selection-coloured underlay under the normal stroke
+      ctx.strokeStyle = C.select;
+      ctx.lineWidth = 5;
+      strokeWorld(ctx, s, path);
+      ctx.strokeStyle = netFaulted(s, ta) || netFaulted(s, tb)
+        ? C.wireFault
+        : hot ? C.wireHot : C.wire;
+      ctx.lineWidth = 2;
+    }
     strokeWorld(ctx, s, path);
   }
   drawCrossingGlyphs(ctx, s);
@@ -238,6 +283,33 @@ function drawDragWire(ctx: CanvasRenderingContext2D, s: RenderScene, pins: Map<s
   ctx.lineWidth = 2;
   strokeWorld(ctx, s, routeWire(a, s.dragWire.cursor, pinExitDir(s.schematic, s.dragWire.from, a)));
   ctx.setLineDash([]);
+}
+
+/** Dashed snapped outline of the part a palette drag would drop here. */
+function drawGhost(ctx: CanvasRenderingContext2D, s: RenderScene): void {
+  if (!s.ghost) return;
+  let fp;
+  try {
+    fp = footprintFor(s.ghost.type, {});
+  } catch {
+    return; // unknown type: the drop will be refused, no ghost
+  }
+  const tl = s.viewport.worldToScreen(s.ghost.x + fp.body.x, s.ghost.y + fp.body.y);
+  const br = s.viewport.worldToScreen(
+    s.ghost.x + fp.body.x + fp.body.w, s.ghost.y + fp.body.y + fp.body.h);
+  ctx.save();
+  ctx.globalAlpha = 0.7;
+  ctx.setLineDash([4, 3]);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = C.select;
+  ctx.fillStyle = 'rgba(77, 163, 255, 0.12)';
+  ctx.fillRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+  ctx.strokeRect(tl.x, tl.y, br.x - tl.x, br.y - tl.y);
+  ctx.setLineDash([]);
+  ctx.fillStyle = C.select;
+  ctx.font = '11px monospace';
+  ctx.fillText(s.ghost.type, tl.x, tl.y - 4);
+  ctx.restore();
 }
 
 function drawComponent(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent): void {
@@ -457,7 +529,25 @@ function drawOled(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedCompon
   ctx.fill();
   ctx.strokeStyle = '#2c3a4d';
   ctx.stroke();
-  const cells = s.machine?.oledFrames().get(c.id)?.cells;
+  const frame = s.machine?.oledFrames().get(c.id);
+  if (frame?.fb) {
+    // P3.5: visible 128x64 pixels (SSD1306 page layout) as one path
+    ctx.fillStyle = '#cfe9ff';
+    const pw = sw / 128;
+    const ph = sh / 64;
+    for (let y = 0; y < 64; y++) {
+      for (let byte = 0; byte < 16; byte++) {
+        const b = frame.fb[(y << 4) + byte];
+        if (!b) continue;
+        for (let bit = 0; bit < 8; bit++) {
+          if (b & (1 << bit)) {
+            ctx.fillRect(sx + ((byte << 3) + bit) * pw, sy + y * ph, pw + 0.5, ph + 0.5);
+          }
+        }
+      }
+    }
+  }
+  const cells = frame?.cells;
   if (cells) {
     ctx.fillStyle = '#6ef7a5';
     ctx.font = `${Math.max(7, Math.min(10, 9 * b.z))}px ui-monospace, monospace`;

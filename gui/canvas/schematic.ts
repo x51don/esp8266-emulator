@@ -71,6 +71,10 @@ export function rotatePoint(p: Pt, rot: Rot): Pt {
 
 const PIN_GAP = 20;
 
+/** Board footprint geometry (shared with the example presets, audit H1). */
+export const BOARD_PITCH = 20;
+export const BOARD_RIGHT_X = 160;
+
 export function footprintFor(type: string, params: Record<string, unknown>): Footprint {
   switch (type) {
     case 'led':
@@ -154,8 +158,8 @@ export function footprintFor(type: string, params: Record<string, unknown>): Foo
       };
     case 'board': {
       const board = getBoard(String(params.board ?? 'wemos-d1-mini'));
-      const PITCH = 20;
-      const RIGHT_X = 160;
+      const PITCH = BOARD_PITCH;
+      const RIGHT_X = BOARD_RIGHT_X;
       const pins = board.rails.map((r) => ({
         name: r.name,
         x: r.side === 'left' ? 0 : RIGHT_X,
@@ -186,11 +190,31 @@ export class Schematic {
   private wireSeq = 0;
   private routesCache: Map<string, Pt[]> | null = null;
   private crossingsCache: Crossing[] | null = null;
+  private dragging = false;
 
-  /** Invalidate the derived wire-route cache; every mutator calls this. */
+  /** Public change counter (P1.3): the canvas frame loop skips renderScene
+   *  while this, the viewport and the interaction state are unchanged. */
+  version = 0;
+
+  /** Invalidate the derived wire-route cache; every mutator calls this.
+   *  During a drag session (beginDrag..endDrag) invalidation is deferred so
+   *  the expensive route recompute runs once on commit, not per pointermove. */
   private touch(): void {
+    this.version++;
+    if (this.dragging) return;
     this.routesCache = null;
     this.crossingsCache = null;
+  }
+
+  /** Freeze derived caches for a drag session (P1.2 cheap drag). */
+  beginDrag(): void {
+    this.dragging = true;
+  }
+
+  /** Commit a drag (or any change): rebuild routes/crossings on next read. */
+  endDrag(): void {
+    this.dragging = false;
+    this.touch();
   }
 
   add(type: string, x: number, y: number, params: Record<string, unknown> = {}, id?: string): PlacedComponent {
@@ -252,10 +276,23 @@ export class Schematic {
     this.touch();
   }
 
-  /** Live-tune a parameter (pot ratio, sensor values). */
+  /** Live-tune a parameter (pot ratio, sensor values, dialog edits).
+   *  Parameters feed the footprint (board model, strip size), so the derived
+   *  route/crossing caches must be invalidated unconditionally. */
   setParam(id: string, key: string, value: unknown): void {
     const c = this.components.get(id);
-    if (c) c.params[key] = value;
+    if (!c) return;
+    c.params[key] = value;
+    this.touch();
+  }
+
+  /** Change the placed MCU board model; validates the id and rebuilds pins. */
+  setBoard(boardId: string): void {
+    getBoard(boardId); // unknown board -> throw before mutating
+    const c = this.boardComponent();
+    if (!c) throw new Error('no board component on the schematic');
+    c.params.board = boardId;
+    this.touch();
   }
 
   wire(a: TerminalRef, b: TerminalRef): WireSeg {
@@ -367,6 +404,10 @@ export class Schematic {
     const ids: string[] = [];
     const inputs: WireRouteInput[] = [];
     const map0 = new Map<string, Pt[]>();
+    // body rects once per rebuild (P1.2): per-wire obstacle lists are
+    // filtered views of this pool instead of fresh footprintFor walks.
+    const pool: Array<{ id: string; rect: Rect }> = [];
+    for (const c of this.components.values()) pool.push({ id: c.id, rect: this.bodyRect(c) });
     for (const w of this.wires.values()) {
       let a: Pt;
       let b: Pt;
@@ -379,7 +420,10 @@ export class Schematic {
       if (w.custom && w.custom.length) map0.set(w.id, manualPath(a, w.custom, b));
       ids.push(w.id);
       if (w.custom && w.custom.length) continue;
-      const bodies = this.wireObstacles(w.a, w.b);
+      const bodies = pool
+        .filter(({ id, rect }) =>
+          !((id === w.a.comp || id === w.b.comp) && rect.w <= 44 && rect.h <= 44))
+        .map(({ rect }) => rect);
       inputs.push({
         a, b,
         da: pinExitDir(this, w.a, a),
@@ -474,14 +518,68 @@ export class Schematic {
   }
 
   static fromJSON(text: string): Schematic {
-    const doc = JSON.parse(text) as DocShape;
+    const raw: unknown = JSON.parse(text);
     const s = new Schematic();
-    for (const c of doc.comps) s.components.set(c.id, c);
-    for (const w of doc.wires) s.wires.set(w.id, w);
-    s.seq = doc.seq ?? {};
-    s.wireSeq = doc.wireSeq ?? 0;
+    if (!isDocShape(raw)) throw new Error('invalid schematic document');
+    for (const c of raw.comps) {
+      if (!isComp(c)) throw new Error('invalid schematic document: malformed component');
+      if (c.type === 'board') getBoard(String(c.params.board)); // unknown board id -> throw
+      else {
+        try {
+          footprintFor(c.type, c.params);
+        } catch {
+          throw new Error(`unknown component type '${c.type}'`);
+        }
+      }
+      s.components.set(c.id, c);
+    }
+    for (const w of raw.wires) {
+      if (!isWire(w)) throw new Error('invalid schematic document: malformed wire');
+      s.wires.set(w.id, w);
+    }
+    s.seq = raw.seq ?? {};
+    s.wireSeq = typeof raw.wireSeq === 'number' ? raw.wireSeq : 0;
     return s;
   }
+}
+
+// ---- document shape guards: bad imports die at load, not inside rAF render ----
+
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const isRot = (v: unknown): v is Rot => v === 0 || v === 90 || v === 180 || v === 270;
+
+function isDocShape(v: unknown): v is DocShape {
+  const d = v as DocShape;
+  return isObj(v) && Array.isArray(d.comps) && Array.isArray(d.wires);
+}
+
+function isComp(v: unknown): v is PlacedComponent {
+  if (!isObj(v)) return false;
+  return (
+    typeof v.id === 'string' &&
+    typeof v.type === 'string' &&
+    isNum(v.x) &&
+    isNum(v.y) &&
+    isRot(v.rot) &&
+    isObj(v.params) &&
+    (v.flip === undefined || typeof v.flip === 'boolean')
+  );
+}
+
+function isTerminalRef(v: unknown): v is TerminalRef {
+  return isObj(v) && typeof v.comp === 'string' && typeof v.pin === 'string';
+}
+
+function isWire(v: unknown): v is WireSeg {
+  if (!isObj(v)) return false;
+  if (typeof v.id !== 'string' || !isTerminalRef(v.a) || !isTerminalRef(v.b)) return false;
+  if (v.custom === undefined) return true;
+  return (
+    Array.isArray(v.custom) &&
+    v.custom.every((p) => isObj(p) && isNum(p.x) && isNum(p.y))
+  );
 }
 
 /** The direction a wire leaves a pin: straight away from the body centre. */

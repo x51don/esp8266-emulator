@@ -392,3 +392,53 @@ body {
   gap: 8px;
   margin-top: 12px;
 }
+
+/* P3.1: ADC force dock (bottom-right of the canvas) */
+.adc-dock {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font: 12px/1.4 monospace;
+  color: var(--dim);
+  user-select: none;
+  opacity: 0.75;
+  transition: opacity 0.15s;
+}
+.adc-dock:hover,
+.adc-dock.on {
+  opacity: 1;
+}
+.adc-dock.on {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.adc-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.adc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.adc-row.off {
+  visibility: hidden;
+  height: 0;
+  margin: 0;
+  overflow: hidden;
+}
+.adc-row input[type='range'] {
+  width: 130px;
+  accent-color: var(--accent);
+}
+.adc-read {
+  min-width: 86px;
+  text-align: right;
+}

@@ -49,8 +49,8 @@ export function SerialMonitor({ lines, onClear }: Props) {
           if (box) pinned.current = autoscroll && box.scrollHeight - box.scrollTop - box.clientHeight < 24;
         }}
       >
-        {lines.map((l, i) => (
-          <div key={i} className="serial-line">
+        {lines.map((l) => (
+          <div key={l.id} className="serial-line">
             <span className="serial-ts">+{(l.tMs / 1000).toFixed(3)}s</span>
             {l.text === '' ? '\u00a0' : l.text}
           </div>

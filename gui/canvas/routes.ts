@@ -78,13 +78,95 @@ export function segmentHitsRect(p: Pt, q: Pt, r: Rect): boolean {
   return false;
 }
 
+// Uniform-grid index over axis-aligned rects (P1.2). Detouring runs dozens
+// of hit-tests per wire; with thousands of obstacles (bodies + prior wires)
+// scanning every rect per segment dominated dense-scene rebuilds. All paths
+// here are orthogonal, so a segment query is just a cell walk.
+class ObstacleIndex {
+  private static CELL = 64;
+  private cells = new Map<number, Rect[]>();
+  private stamps = new Map<number, number>();
+  private stamp = 0;
+
+  constructor(rects: Rect[]) {
+    const C = ObstacleIndex.CELL;
+    for (const r of rects) {
+      const cx0 = Math.floor(r.x / C);
+      const cx1 = Math.floor((r.x + r.w) / C);
+      const cy0 = Math.floor(r.y / C);
+      const cy1 = Math.floor((r.y + r.h) / C);
+      for (let cy = cy0; cy <= cy1; cy++)
+        for (let cx = cx0; cx <= cx1; cx++) {
+          const k = cy * 100003 + cx;
+          const b = this.cells.get(k);
+          if (b) b.push(r);
+          else this.cells.set(k, [r]);
+        }
+    }
+  }
+
+  /** Rects stored in cells touched by the orthogonal segment p-q. */
+  nearSegment(p: Pt, q: Pt): Rect[] {
+    const C = ObstacleIndex.CELL;
+    const out: Rect[] = [];
+    this.stamp++;
+    const s = this.stamp;
+    const visit = (cx: number, cy: number): void => {
+      const k = cy * 100003 + cx;
+      if (this.stamps.get(k) === s) return;
+      this.stamps.set(k, s);
+      const b = this.cells.get(k);
+      if (b) for (const r of b) out.push(r);
+    };
+    if (p.y === q.y) {
+      const cy = Math.floor(p.y / C);
+      const cx0 = Math.floor(Math.min(p.x, q.x) / C);
+      const cx1 = Math.floor(Math.max(p.x, q.x) / C);
+      for (let cx = cx0; cx <= cx1; cx++) visit(cx, cy);
+    } else {
+      const cx = Math.floor(p.x / C);
+      const cy0 = Math.floor(Math.min(p.y, q.y) / C);
+      const cy1 = Math.floor(Math.max(p.y, q.y) / C);
+      for (let cy = cy0; cy <= cy1; cy++) visit(cx, cy);
+    }
+    return out;
+  }
+}
+
 /** Middle-segment hits (exit stubs excluded when the path carries them). */
-function pathHits(path: Pt[], obstacles: Rect[], stubA: boolean, stubB: boolean): Rect[] {
+function pathHits(
+  path: Pt[], obstacles: Rect[], stubA: boolean, stubB: boolean,
+  idx?: ObstacleIndex,
+): Rect[] {
   const hits: Rect[] = [];
   const first = stubA ? 1 : 0;
   const last = path.length - 2 - (stubB ? 1 : 0);
+  if (last < first) return hits;
+  if (idx) {
+    for (let i = first; i <= last; i++) {
+      for (const r of idx.nearSegment(path[i], path[i + 1])) {
+        if (segmentHitsRect(path[i], path[i + 1], r) && !hits.includes(r)) hits.push(r);
+      }
+    }
+    return hits;
+  }
+  // Broad phase (P1.2): a rect outside the path's bbox cannot be hit by any
+  // segment, and dense scenes pass thousands of obstacles per call.
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  for (let i = first; i <= last + 1; i++) {
+    const p = path[i];
+    if (p.x < bx0) bx0 = p.x;
+    if (p.x > bx1) bx1 = p.x;
+    if (p.y < by0) by0 = p.y;
+    if (p.y > by1) by1 = p.y;
+  }
+  const near: Rect[] = [];
+  for (const r of obstacles) {
+    if (r.x <= bx1 && r.x + r.w >= bx0 && r.y <= by1 && r.y + r.h >= by0) near.push(r);
+  }
+  if (near.length === 0) return hits;
   for (let i = first; i <= last; i++) {
-    for (const r of obstacles) {
+    for (const r of near) {
       if (segmentHitsRect(path[i], path[i + 1], r) && !hits.includes(r)) hits.push(r);
     }
   }
@@ -95,10 +177,13 @@ function pathHits(path: Pt[], obstacles: Rect[], stubA: boolean, stubB: boolean)
  * Push every offending middle segment to the nearer open side of the rect,
  * repeating until the path is clean or the pass budget runs out.
  */
-function detour(path: Pt[], obstacles: Rect[], stubA: boolean, stubB: boolean): Pt[] {
+function detour(
+  path: Pt[], obstacles: Rect[], stubA: boolean, stubB: boolean,
+  idx?: ObstacleIndex,
+): Pt[] {
   let pts = path;
   for (let pass = 0; pass < 6; pass++) {
-    const hits = pathHits(pts, obstacles, stubA, stubB);
+    const hits = pathHits(pts, obstacles, stubA, stubB, idx);
     if (hits.length === 0) return pts;
     const r = hits[0];
     const first = stubA ? 1 : 0;
@@ -189,9 +274,15 @@ function extendStub(p: Pt, d: Dir | undefined, obstacles: Rect[]): Pt {
 function candidates(a1: Pt, b1: Pt, obstacles: Rect[]): Pt[][] {
   const busXs = [snap10((a1.x + b1.x) / 2)];
   const busYs = [snap10((a1.y + b1.y) / 2)];
+  // P1.2: bus lanes come from obstacles near the corridor between the stub
+  // ends only. Every obstacle corner in the whole scene used to generate a
+  // candidate (~8000 on big docs), and detouring them all dominated rebuilds.
+  const WX = 260;
+  const wx0 = Math.min(a1.x, b1.x) - WX, wx1 = Math.max(a1.x, b1.x) + WX;
+  const wy0 = Math.min(a1.y, b1.y) - WX, wy1 = Math.max(a1.y, b1.y) + WX;
   for (const r of obstacles) {
-    busXs.push(r.x - PAD * 2, r.x + r.w + PAD * 2);
-    busYs.push(r.y - PAD * 2, r.y + r.h + PAD * 2);
+    if (r.y + r.h >= wy0 && r.y <= wy1) busXs.push(r.x - PAD * 2, r.x + r.w + PAD * 2);
+    if (r.x + r.w >= wx0 && r.x <= wx1) busYs.push(r.y - PAD * 2, r.y + r.h + PAD * 2);
   }
   const out: Pt[][] = [];
   const push = (pts: Pt[]): void => {
@@ -219,17 +310,28 @@ const CROSS = 30; // passing through a prior wire's outline
 
 function astarRoute(
   a: Pt, b: Pt, da: Dir | undefined, db: Dir | undefined,
-  hard: Rect[], soft: Rect[],
+  hardAll: Rect[], softAll: Rect[],
 ): Pt[] | null {
   const M = 140;
-  let x0 = Math.min(a.x, b.x) - M;
-  let y0 = Math.min(a.y, b.y) - M;
-  let x1 = Math.max(a.x, b.x) + M;
-  let y1 = Math.max(a.y, b.y) + M;
-  for (const r of hard) {
-    x0 = Math.min(x0, r.x - M); y0 = Math.min(y0, r.y - M);
-    x1 = Math.max(x1, r.x + r.w + M); y1 = Math.max(y1, r.y + r.h + M);
-  }
+  const x0w = Math.min(a.x, b.x) - M;
+  const y0w = Math.min(a.y, b.y) - M;
+  const x1w = Math.max(a.x, b.x) + M;
+  const y1w = Math.max(a.y, b.y) + M;
+  // P1.2: the grid window is the terminals' bounding box plus a detour
+  // margin, and obstacles are CLIPPED to it. The old code grew the window to
+  // cover every obstacle, so one distant part turned every re-route into a
+  // whole-scene search (300-wire scenes spent minutes per rebuild). Anything
+  // outside the window cannot be crossed by an in-window path anyway; when
+  // the route genuinely needs more room A* returns null and the caller keeps
+  // the candidate path, like the old oversized-grid guard.
+  const inWin = (r: Rect): boolean =>
+    r.x <= x1w + PAD && r.x + r.w >= x0w - PAD && r.y <= y1w + PAD && r.y + r.h >= y0w - PAD;
+  const hard = hardAll.filter(inWin);
+  const soft = softAll.filter(inWin);
+  let x0 = x0w;
+  let y0 = y0w;
+  const x1 = x1w;
+  const y1 = y1w;
   let cell = 10;
   while (((x1 - x0) / cell) * ((y1 - y0) / cell) > 70000) cell *= 2;
   x0 = Math.floor(x0 / cell) * cell;
@@ -253,10 +355,17 @@ function astarRoute(
         if (hit(x0 + nx * cell, y0 + ny * cell, r, PAD)) blocked[ny * W + nx] = 1;
   }
   const pen = new Float64Array(N);
-  if (soft.length) {
-    for (let i = 0; i < N; i++) {
-      const p = node(i);
-      for (const r of soft) if (hit(p.x, p.y, r, 0)) { pen[i] = CROSS; break; }
+  // Rasterize soft obstacles by cell range (P1.2): the old per-node ×
+  // per-rect test was O(N * soft) and dominated dense-scene re-routes.
+  for (const r of soft) {
+    const nx0 = Math.max(0, gx(r.x)); const nx1 = Math.min(W - 1, gx(r.x + r.w));
+    const ny0 = Math.max(0, gy(r.y)); const ny1 = Math.min(H - 1, gy(r.y + r.h));
+    for (let ny = ny0; ny <= ny1; ny++) {
+      const row = ny * W;
+      for (let nx = nx0; nx <= nx1; nx++) {
+        const i = row + nx;
+        if (!blocked[i] && pen[i] === 0) pen[i] = CROSS;
+      }
     }
   }
   const DIRS: Array<[number, number]> = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -334,13 +443,17 @@ function astarRoute(
   cost[start] = 0;
   fscore.set(start, 0);
   push(0, start);
-  const h = (i: number): number => {
+  const h = ((goalPt: Pt) => (i: number): number => {
     const p = node(i);
-    const q = node(goal);
-    return Math.abs(p.x - q.x) + Math.abs(p.y - q.y);
-  };
+    return Math.abs(p.x - goalPt.x) + Math.abs(p.y - goalPt.y);
+  })(node(goal));
   let found = -1;
+  // P1.2 node budget: a hopeless search on a huge grid must not stall the
+  // frame; null falls back to the bounded candidate route, exactly like the
+  // N > 120000 grid guard above.
+  let pops = 0;
   while (heap.length) {
+    if (++pops > 60_000) return null;
     const cur = pop();
     const curF = fscore.get(cur);
     if (curF === undefined) continue; // stale heap duplicate
@@ -402,9 +515,12 @@ export function pathThroughRects(
 export function routeWire(a: Pt, b: Pt, da?: Dir, db?: Dir, obstacles: Rect[] = []): Pt[] {
   const base = routeSimple(a, b, da, db);
   if (obstacles.length === 0) return base;
+  // Spatial index only pays off once the obstacle set is big (P1.2): small
+  // docs keep the dependency-free scan.
+  const idx = obstacles.length >= 96 ? new ObstacleIndex(obstacles) : undefined;
   const stubA = da !== undefined;
   const stubB = db !== undefined;
-  if (pathHits(base, obstacles, base.length > 2 ? stubA : false, base.length > 2 ? stubB : false)
+  if (pathHits(base, obstacles, base.length > 2 ? stubA : false, base.length > 2 ? stubB : false, idx)
       .length === 0)
     return base;
 
@@ -416,19 +532,28 @@ export function routeWire(a: Pt, b: Pt, da?: Dir, db?: Dir, obstacles: Rect[] = 
   const wrap = (mid: Pt[]): Pt[] => dedupe([a, ...prefix, ...mid.slice(1, -1), ...suffix, b]);
 
   let best: Pt[] | null = null;
-  let bestHits = pathHits(base, obstacles, false, false).length;
+  let bestHits = pathHits(base, obstacles, false, false, idx).length;
+  // P1.2: score every candidate cheaply (index hit-count) and only detour
+  // the most promising few. Dense scenes generate thousands of bus lanes;
+  // detouring them all was cubic in scene size.
+  const scored: Array<[Pt[], number]> = [];
   for (const core of candidates(a1, b1, obstacles)) {
     const cand = wrap(core);
-    const fixed = detour(cand, obstacles, true, true);
-    const hits = pathHits(fixed, obstacles, true, true).length;
-    if (hits === 0) return dedupe(fixed);
-    if (hits < bestHits) {
-      bestHits = hits;
+    scored.push([cand, pathHits(cand, obstacles, true, true, idx).length]);
+  }
+  scored.sort((p, q) => p[1] - q[1]);
+  for (const [cand, hits] of scored.slice(0, 24)) {
+    if (hits === 0) return dedupe(cand);
+    const fixed = detour(cand, obstacles, true, true, idx);
+    const fh = pathHits(fixed, obstacles, true, true, idx).length;
+    if (fh === 0) return dedupe(fixed);
+    if (fh < bestHits) {
+      bestHits = fh;
       best = fixed;
     }
   }
   if (best) return dedupe(best);
-  return dedupe(detour(base, obstacles, stubA, stubB));
+  return dedupe(detour(base, obstacles, stubA, stubB, idx));
 }
 
 // ---------- multi-wire routing ----------

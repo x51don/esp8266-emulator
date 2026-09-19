@@ -44,9 +44,19 @@ function loadSchematic(): Schematic {
   return s;
 }
 
+/** A stale/corrupt board id must not crash the machine constructor at mount. */
+export function resolveBoardId(saved: string | null): string {
+  const fallback = 'wemos-d1-mini';
+  if (saved && listBoards().some((b) => b.id === saved)) return saved;
+  if (saved !== null && saved !== fallback) {
+    console.warn(`unknown board "${saved}" in localStorage; using "${fallback}"`);
+  }
+  return fallback;
+}
+
 export function App() {
   const [boardId, setBoardId] = useState<string>(
-    () => localStorage.getItem(LS.board) ?? 'wemos-d1-mini',
+    () => resolveBoardId(localStorage.getItem(LS.board)),
   );
   const [sketch, setSketch] = useState<string>(
     () => localStorage.getItem(LS.sketch) ?? EXAMPLE_SKETCHES['blink.ino'],
@@ -68,21 +78,46 @@ export function App() {
   // ---- machine lifecycle: one machine per board (and per doc swap) ----
   useEffect(() => {
     const m = new Esp8266Machine({ board: boardId });
-    m.onSerial((line) => setSerialLines((prev) => (prev.length > 2000 ? [...prev.slice(-1500), line] : [...prev, line])));
+    const offSerial = m.onSerial((line) => setSerialLines((prev) => (prev.length > 600 ? [...prev.slice(-500), line] : [...prev, line])));
+    // a runtime error faults the machine mid-run; surface it and leave play mode
+    const offFault = m.onFault((reason) => {
+      setError(reason);
+      setRunning(false);
+    });
     // keep the board component in the document in sync with the toolbar
-    const boardComp = schematic.boardComponent();
-    if (boardComp) boardComp.params.board = boardId;
+    // (mutator, not a direct param write: geometry caches must be invalidated)
+    if (schematic.boardComponent()) schematic.setBoard(boardId);
     schematic.syncNetlist(m.netlist);
     setMachine(m);
     setRunning(false);
     setSerialLines([]);
-    localStorage.setItem(LS.board, boardId);
+    try {
+      localStorage.setItem(LS.board, boardId);
+    } catch {
+      /* quota: the id is only a convenience, not worth a banner */
+    }
+    return () => {
+      offFault();
+      offSerial();
+    };
   }, [boardId, schematic, docEpoch]);
 
   // ---- persistence ----
+  const safeStore = useCallback((key: string, value: string) => {
+    try {
+      localStorage.setItem(key, value);
+    } catch (e) {
+      setError(
+        `could not save to browser storage (${
+          e instanceof Error ? e.name : 'QuotaExceeded'
+        }) - your work is still in this tab`,
+      );
+    }
+  }, []);
+
   const persist = useCallback(() => {
-    localStorage.setItem(LS.schematic, schematic.toJSON());
-  }, [schematic]);
+    safeStore(LS.schematic, schematic.toJSON());
+  }, [schematic, safeStore]);
 
   const onEdit = useCallback(() => {
     persist();
@@ -92,13 +127,13 @@ export function App() {
 
   /** Replace the whole document (example / project / import). */
   const applyDoc = useCallback((next: Schematic, nextSketch?: string) => {
-    localStorage.setItem(LS.schematic, next.toJSON());
-    if (nextSketch !== undefined) localStorage.setItem(LS.sketch, nextSketch);
+    safeStore(LS.schematic, next.toJSON());
+    if (nextSketch !== undefined) safeStore(LS.sketch, nextSketch);
     setSchematic(next);
     if (nextSketch !== undefined) setSketch(nextSketch);
     setDocEpoch((e) => e + 1);
     setError(null);
-  }, []);
+  }, [safeStore]);
 
   // ---- examples: sketch AND a wired circuit preset ----
   const onExample = useCallback((name: string) => {
@@ -110,7 +145,12 @@ export function App() {
       )
     )
       return;
-    applyDoc(loadExample(name, boardId), src);
+    // a preset hardwires pins; a board that lacks one must not silently die
+    try {
+      applyDoc(loadExample(name, boardId), src);
+    } catch (e) {
+      setError(`example "${name}" does not fit this board: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }, [applyDoc, boardId]);
 
   // ---- projects ----
@@ -134,8 +174,16 @@ export function App() {
   const onProjectSave = useCallback(() => {
     const name = window.prompt('Save project as:', 'project-1');
     if (!name || !name.trim()) return;
-    store.save({ ...currentProject(), name: name.trim() });
-    setProjects(store.list());
+    try {
+      store.save({ ...currentProject(), name: name.trim() });
+      setProjects(store.list());
+    } catch (e) {
+      setError(
+        `could not save project (${
+          e instanceof Error ? e.name : 'error'
+        }) - browser storage is full`,
+      );
+    }
   }, [store, currentProject]);
 
   const onProjectLoad = useCallback((name: string) => {
@@ -196,7 +244,7 @@ export function App() {
   const onRun = useCallback(() => {
     try {
       machine.load(sketch);
-      localStorage.setItem(LS.sketch, sketch);
+      safeStore(LS.sketch, sketch);
       schematic.syncNetlist(machine.netlist);
       setSerialLines([]);
       machine.run();
@@ -207,7 +255,7 @@ export function App() {
       machine.stop();
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [machine, sketch, schematic]);
+  }, [machine, sketch, schematic, safeStore]);
 
   const onStop = useCallback(() => {
     machine.stop();
@@ -250,6 +298,9 @@ export function App() {
       loadExample: (name: string) => {
         applyDoc(loadExample(name, boardId), EXAMPLE_SKETCHES[name]);
       },
+    };
+    return () => {
+      delete (window as unknown as Record<string, unknown>).__emu;
     };
   }, [schematic, applyDoc, boardId]);
   const machineRef = useRef(machine);

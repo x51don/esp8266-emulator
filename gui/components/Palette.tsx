@@ -3,6 +3,8 @@
  * function, plus a short help card explaining the mouse model.
  */
 
+import { COMPONENT_MIME, dragState } from '../dnd';
+
 interface Item {
   type: string;
   label: string;
@@ -53,7 +55,7 @@ const GROUPS: Array<{ title: string; items: Item[] }> = [
   {
     title: 'Displays',
     items: [
-      { type: 'oled', label: 'OLED 0.96"', hint: 'SSD1306 I2C 0x3C; oledBegin/oledPrint', glyph: '▬' },
+      { type: 'oled', label: 'OLED 0.96"', hint: 'SSD1306 I2C 0x3C; oledBegin, oledSetPixel/Line/Rect, oledShow', glyph: '▬' },
     ],
   },
 ];
@@ -71,8 +73,12 @@ export function Palette() {
               className="palette-item"
               draggable
               onDragStart={(e) => {
-                e.dataTransfer.setData('application/x-component', it.type);
+                e.dataTransfer.setData(COMPONENT_MIME, it.type);
                 e.dataTransfer.effectAllowed = 'copy';
+                dragState.type = it.type;
+              }}
+              onDragEnd={() => {
+                dragState.type = null;
               }}
               title={it.hint}
             >

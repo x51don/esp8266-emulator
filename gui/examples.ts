@@ -5,7 +5,7 @@
  * pin -> resistor -> LED -> GND (or pin -> button -> GND).
  */
 
-import { Schematic, type PlacedComponent } from './canvas/schematic';
+import { BOARD_RIGHT_X, Schematic, type PlacedComponent } from './canvas/schematic';
 import type { Pt } from './canvas/viewport';
 
 import blink from '../examples/blink.ino?raw';
@@ -40,8 +40,8 @@ function pinWorld(sc: Schematic, pin: string): Pt & { dir: number } {
   const board = sc.boardComponent();
   if (!board) throw new Error('preset needs a board');
   const p = sc.pinWorld({ comp: board.id, pin });
-  // board footprint: left column sits at local x=0, right column at 160
-  const dir = p.x - board.x <= 80 ? -1 : 1;
+  // board footprint: left column sits at local x=0, right at BOARD_RIGHT_X
+  const dir = p.x - board.x <= BOARD_RIGHT_X / 2 ? -1 : 1;
   return { ...p, dir };
 }
 
@@ -169,11 +169,10 @@ export function loadExample(name: string, boardId: string): Schematic {
       const board = sc.boardComponent()!;
       const p = pinWorld(sc, 'D6'); // echo; trig sits one row up = D5
       const h = sc.add('hcsr', p.x + 240, p.y - 40, { cm: 20 });
-      void h;
-      wire(sc, { comp: 'hcsr-1', pin: 'echo' }, { comp: board.id, pin: 'D6' });
-      wire(sc, { comp: 'hcsr-1', pin: 'trig' }, { comp: board.id, pin: 'D5' });
-      wire(sc, { comp: 'hcsr-1', pin: 'vcc' }, { comp: board.id, pin: '3V3' });
-      wire(sc, { comp: 'hcsr-1', pin: 'gnd' }, { comp: board.id, pin: 'GND' });
+      wire(sc, { comp: h.id, pin: 'echo' }, { comp: board.id, pin: 'D6' });
+      wire(sc, { comp: h.id, pin: 'trig' }, { comp: board.id, pin: 'D5' });
+      wire(sc, { comp: h.id, pin: 'vcc' }, { comp: board.id, pin: '3V3' });
+      wire(sc, { comp: h.id, pin: 'gnd' }, { comp: board.id, pin: 'GND' });
       addLedChain(sc, 'D4');
       break;
     }

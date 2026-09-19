@@ -8,6 +8,7 @@
 export interface Advanceable {
   advance(ms: number): void;
   timeMs(): number;
+  phase?(): string;
 }
 
 export class SimDriver {
@@ -36,6 +37,12 @@ export class SimDriver {
   /** elapsed real milliseconds since the previous frame call. */
   frame(wallMs: number): void {
     if (!this.running || !(wallMs > 0)) return;
+    // A faulted machine has no live tasks; pumping it would burn frames for
+    // nothing, and the UI needs `running === false` to drop out of play mode.
+    if (this.machine.phase?.() === 'faulted') {
+      this.running = false;
+      return;
+    }
     const virtual = Math.min(wallMs, this.maxStepMs) * this.speed;
     this.machine.advance(virtual);
     this.simulatedMs += virtual;

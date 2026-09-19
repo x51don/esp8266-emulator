@@ -5,6 +5,8 @@
  */
 
 import { useEffect, useMemo, useRef } from 'react';
+import { COMPONENT_MIME, dragState } from '../dnd';
+import { AdcDock } from './AdcDock';
 import { Esp8266Machine } from '../../core/machine';
 import { nearestPin, polylineHit } from '../canvas/hit';
 import { renderScene } from '../canvas/renderer';
@@ -60,9 +62,15 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
   // switch, and a stale driver would pump a dead simulation.
   const driver = useMemo(() => new SimDriver(machine, { speed }), [machine]); // eslint-disable-line react-hooks/exhaustive-deps
   const driverRef = useRef<SimDriver>(driver);
+  // Unmounting mid-press must release the button and drop the window listener.
+  useEffect(() => () => activeRelease.current?.(), []);
   driverRef.current = driver;
   const toolRef = useRef<Tool>({ kind: 'idle' });
+  /** Momentary-button release handler installed on window; removed on unmount. */
+  const activeRelease = useRef<(() => void) | null>(null);
   const hoverPinRef = useRef<TerminalRef | null>(null);
+  const hoverWireRef = useRef<string | null>(null);
+  const ghostRef = useRef<{ type: string; x: number; y: number } | null>(null);
   const selectionRef = useRef<Set<string>>(new Set());
   const runningRef = useRef(running);
   runningRef.current = running;
@@ -108,28 +116,64 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
     };
 
     let lastMs = -1;
+    let lastSig = '';
+    // The rAF loop is the whole app: a single escaping exception cancels the
+    // re-arm below and freezes canvas + simulation forever. Both halves are
+    // therefore fenced; the re-arm runs unconditionally.
     const frame = (nowMs: number): void => {
-      resize();
-      if (lastMs >= 0 && runningRef.current) driverRef.current.frame(nowMs - lastMs);
+      try {
+        resize();
+        if (lastMs >= 0 && runningRef.current) driverRef.current.frame(nowMs - lastMs);
+      } catch (e) {
+        console.error('simulation frame failed', e);
+      }
       lastMs = nowMs;
-      const dpr = window.devicePixelRatio || 1;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const tool = toolRef.current;
-      renderScene(ctx, {
-        schematic,
-        viewport: vpRef.current,
-        width: canvas.clientWidth,
-        height: canvas.clientHeight,
-        circuit: runningRef.current ? machine.circuit() : null,
-        running: runningRef.current,
-        selection: selectionRef.current,
-        hoverPin: hoverPinRef.current,
-        dragWire:
-          tool.kind === 'wire'
-            ? { from: tool.from, cursor: tool.cursor }
-            : null,
-        machine: runningRef.current ? machine : null,
-      });
+      try {
+        const dpr = window.devicePixelRatio || 1;
+        const tool = toolRef.current;
+        const vp = vpRef.current;
+        const hov = hoverPinRef.current;
+        // P1.3 render gating: with the machine stopped nothing changes
+        // outside the inputs below, so an unchanged signature skips
+        // renderScene entirely (idle + stop = zero redraw). The wire tool
+        // carries a cursor, so it is the only non-idle tool that needs to
+        // force redraws; document changes bump schematic.version.
+        const sig = runningRef.current
+          ? 'run'
+          : [
+              schematic.version, vp.camX, vp.camY, vp.zoom,
+              canvas.clientWidth, canvas.clientHeight, dpr,
+              selectionRef.current.size, [...selectionRef.current].join(','),
+              hov ? `${hov.comp}.${hov.pin}` : '', hoverWireRef.current ?? '',
+              ghostRef.current ? `g${ghostRef.current.type}${ghostRef.current.x},${ghostRef.current.y}` : '',
+              tool.kind === 'idle' ? 'i'
+                : tool.kind === 'wire' ? `w${Math.round(tool.cursor.x)},${Math.round(tool.cursor.y)}`
+                : tool.kind,
+            ].join('|');
+        if (runningRef.current || sig !== lastSig) {
+          lastSig = sig;
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          renderScene(ctx, {
+            schematic,
+            viewport: vp,
+            width: canvas.clientWidth,
+            height: canvas.clientHeight,
+            circuit: runningRef.current ? machine.circuit() : null,
+            running: runningRef.current,
+            selection: selectionRef.current,
+            hoverPin: hov,
+            hoverWire: hoverWireRef.current,
+            ghost: ghostRef.current,
+            dragWire:
+              tool.kind === 'wire'
+                ? { from: tool.from, cursor: tool.cursor }
+                : null,
+            machine: runningRef.current ? machine : null,
+          });
+        }
+      } catch (e) {
+        console.error('scene render failed; skipping frame', e);
+      }
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
@@ -245,7 +289,10 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
         const release = (): void => {
           machine.press(id, false);
           window.removeEventListener('pointerup', release);
+          if (activeRelease.current === release) activeRelease.current = null;
         };
+        activeRelease.current?.(); // a second press while held: release the first
+        activeRelease.current = release;
         window.addEventListener('pointerup', release);
         return;
       }
@@ -270,6 +317,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
         startPos.set(sid, { x: c.x, y: c.y });
       }
       toolRef.current = { kind: 'move', ids: [...selectionRef.current], startWorld: w, startPos };
+      schematic.beginDrag(); // routes redraw from the last commit until release
       return;
     }
     // alt+click a wire: drop its manual route, back to auto
@@ -342,6 +390,12 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
       }
     } else {
       hoverPinRef.current = findPin(w);
+      // P2: same hit-test the click uses, so what lights up is what acts.
+      hoverWireRef.current = hoverPinRef.current
+        ? null
+        : findWireSeg(w)?.id ?? null;
+      const cv = canvasRef.current;
+      if (cv) cv.style.cursor = hoverPinRef.current || hoverWireRef.current ? 'pointer' : '';
     }
   };
 
@@ -375,7 +429,10 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
           /* duplicate wire: ignore the second attempt */
         }
       }
-    } else if (tool.kind === 'move' || tool.kind === 'tune' || tool.kind === 'seg') {
+    } else if (tool.kind === 'move') {
+      schematic.endDrag(); // commit: one route rebuild after the drag
+      onEdit();
+    } else if (tool.kind === 'tune' || tool.kind === 'seg') {
       onEdit();
     }
     toolRef.current = { kind: 'idle' };
@@ -399,6 +456,14 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement).isContentEditable) return;
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const sel = [...selectionRef.current];
+        if (sel.length === 0 && hoverWireRef.current) {
+          if (runningRef.current) return; // no doc edits while the machine runs
+          if (!confirmOr(`Remove wire ${hoverWireRef.current}?`)) return;
+          schematic.removeWire(hoverWireRef.current);
+          hoverWireRef.current = null;
+          onEdit();
+          return;
+        }
         if (sel.length === 0) return;
         let wires = 0;
         for (const w of schematic.wires.values())
@@ -426,6 +491,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
           }
         }
       } else if (e.key === 'Escape') {
+        if (toolRef.current.kind === 'move') schematic.endDrag(); // never leave the doc frozen
         toolRef.current = { kind: 'idle' };
         selectionRef.current = new Set();
       }
@@ -437,7 +503,9 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
   // palette drop
   const onDrop = (e: React.DragEvent): void => {
     e.preventDefault();
-    const type = e.dataTransfer.getData('application/x-component');
+    ghostRef.current = null;
+    dragState.type = null;
+    const type = e.dataTransfer.getData(COMPONENT_MIME);
     if (!type) return;
     const rect = canvasRef.current!.getBoundingClientRect();
     const world = vpRef.current.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
@@ -486,7 +554,28 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
   };
 
   return (
-    <div ref={hostRef} className="canvas-host" onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
+    <div
+      ref={hostRef}
+      className="canvas-host"
+      onDragOver={(e) => {
+        e.preventDefault();
+        // P2: snapped ghost preview; dataTransfer is blind during dragover,
+        // so the type comes from the shared dragState mirror.
+        const cv = canvasRef.current;
+        if (!dragState.type || !cv) {
+          ghostRef.current = null;
+          return;
+        }
+        const rect = cv.getBoundingClientRect();
+        const world = vpRef.current.screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+        const snapped = snapToGrid(world, 10);
+        ghostRef.current = { type: dragState.type, x: snapped.x, y: snapped.y };
+      }}
+      onDragLeave={() => {
+        ghostRef.current = null;
+      }}
+      onDrop={onDrop}
+    >
       <canvas
         ref={canvasRef}
         onPointerDown={onPointerDown}
@@ -494,6 +583,7 @@ export function SchematicCanvas({ schematic, machine, running, speed, boardId, o
         onPointerUp={onPointerUp}
         onDoubleClick={onDoubleClick}
       />
+      <AdcDock machine={machine} />
     </div>
   );
 }
