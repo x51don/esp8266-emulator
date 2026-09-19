@@ -7,13 +7,15 @@
  * moves on its own, so tests are deterministic and the GUI can map
  * wall-clock to virtual time with a speed factor.
  *
- * CPU driving model (cooperative):
+ * CPU driving model (cooperative scheduler, preemptive interrupts):
  * - setup()/loop() run as generators; delay() suspends into a clock task;
  * - loop() bodies re-enter through the scheduler so timers keep firing;
  * - loop bodies also yield 'tick' regularly, and the pump has a slice budget
  *   so even delay-free loops stay interruptible;
- * - timer0 ISRs run cooperatively between CPU slices (documented deviation
- *   from real hardware, which preempts).
+ * - ISRs (attachInterrupt, timer, Ticker) are queued with a ~2 us entry
+ *   latency and preempt the main program at the next generator yield,
+ *   ~like real hardware; noInterrupts() masks entry (edges stay pending).
+ *   (Deviation: preemption is at yield points, not mid-instruction.)
  */
 
 import { Clock, type TimerId } from './clock';
@@ -54,6 +56,8 @@ interface Alarm {
 }
 
 const PUMP_SLICE = 5000; // tick yields before the CPU hands the world a turn
+/** F2.1: hardware ISR entry latency (~40 cycles @80 MHz + context save). */
+const ISR_LATENCY_US = 2;
 /**
  * Interpreter yields allowed per advance() call. The interpreter is the chip
  * speed: when a sketch burns this budget the simulation slows down relative
@@ -114,7 +118,9 @@ export class Esp8266Machine implements LanHost {
   private cpuTask: TimerId | null = null;
   private isrTask: TimerId | null = null;
   private alarms = new Map<number, Alarm>();
-  private isrQueue: string[] = [];
+  private isrQueue: Array<{ fn: string; at: number }> = [];
+  /** F2.1: noInterrupts()/interrupts() gate ISR entry; edges stay pending. */
+  private interruptsEnabled = true;
   /** P3.3 WiFi mock: scripted radio + object registry. No sockets. */
   private wifi = {
     /** µs timestamp when the link comes up; null = not associated. */
@@ -274,6 +280,7 @@ export class Esp8266Machine implements LanHost {
     this.gpio.reset();
     this.pinStress.clear(); // fresh electrical conditions (damage persists)
     this.netlist.resetTime(); // pending button chatter dies with the run
+    this.interruptsEnabled = true; // a reboot re-enables the interrupt controller
     this.serialLog = [];
     this.alarms.clear();
     this.wifi.connectAt = null;
@@ -588,8 +595,10 @@ private tickerCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
       obj.tickerFn = fn;
       obj.tickerTask = this.clock.setInterval(obj.tickerUs, () => {
         if (this.machinePhase !== 'running') return;
-        this.isrQueue.push(fn);
-        this.scheduleWake(0, true);
+        if (!this.isrQueue.some((e) => e.fn === fn)) {
+          this.isrQueue.push({ fn, at: this.clock.now() + ISR_LATENCY_US });
+          this.scheduleWake(ISR_LATENCY_US, true);
+        }
       });
       return { value: 0 };
     }
@@ -999,8 +1008,13 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
         this.fault(`attachInterrupt: '${a.fn}()' is not defined`);
         return;
       }
-      this.isrQueue.push(a.fn);
-      this.scheduleWake(0, true);
+      // F2.1: a per-source pending bit - an edge arriving while this ISR is
+      // still queued (masked or mid-run) coalesces into the pending call.
+      // `at` enforces the hardware entry latency per edge.
+      if (!this.isrQueue.some((e) => e.fn === a.fn)) {
+        this.isrQueue.push({ fn: a.fn, at: this.clock.now() + ISR_LATENCY_US });
+        this.scheduleWake(ISR_LATENCY_US, true);
+      }
     }
   }
 
@@ -1008,10 +1022,11 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
 
   /**
    * The sketch owns at most two coroutines: `mainGen` (setup/loop) and one
-   * `isrGen` (timer callback). Each has its own scheduler wake-up task, so a
-   * pending delay() wake-up and an alarm can never race for the same slot.
-   * ISRs start when the main program is parked inside delay() - cooperative
-   * "interrupts" (documented deviation: real hardware preempts anywhere).
+   * `isrGen` (interrupt service routine). Each has its own scheduler wake-up
+   * task, so a pending delay() wake-up and an alarm can never race for the
+   * same slot. F2.1: the ISR lane preempts main at any interpreter yield
+   * (delay suspend or loop tick), ~ISR_LATENCY_US after the triggering edge;
+   * while noInterrupts() masks, queued ISRs wait for interrupts() instead.
    */
   private scheduleWake(us: number, forIsr: boolean): void {
     if (this.machinePhase !== 'running') return;
@@ -1025,11 +1040,24 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
     else this.cpuTask = task;
   }
 
+  /** Any queued edge whose entry latency has already elapsed? */
+  private isrReady(): boolean {
+    const now = this.clock.now();
+    return this.isrQueue.some((e) => e.at <= now);
+  }
+
   private step(): void {
     if (this.machinePhase !== 'running') return;
-    if (!this.isrGen && this.isrQueue.length && this.mainSuspended && this.mainGen) {
-      const name = this.isrQueue.shift()!;
-      if (this.interp!.hasFunction(name)) this.isrGen = this.interp!.callFn(name);
+    const now = this.clock.now();
+    if (!this.isrGen && this.interruptsEnabled && this.mainGen) {
+      // take the first edge whose hardware latency has elapsed (FIFO of ready
+      // entries); not-ready ones stay queued for their scheduled wake-up
+      const i = this.isrQueue.findIndex((e) => e.at <= now);
+      if (i >= 0) {
+        const name = this.isrQueue[i].fn;
+        this.isrQueue.splice(i, 1);
+        if (this.interp!.hasFunction(name)) this.isrGen = this.interp!.callFn(name);
+      }
     }
     if (this.isrGen) {
       this.runGen(this.isrGen, true);
@@ -1076,6 +1104,16 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
           this.mainSuspended = true;
           this.scheduleWake(pause.us, false);
         }
+        // F2.1: even a parked delay() must let a ready ISR in right now.
+        if (!isIsr && this.interruptsEnabled && !this.isrGen && this.isrReady()) {
+          this.scheduleWake(0, true);
+        }
+        return;
+      }
+      // F2.1: loop tick with a ready ISR -> the ISR lane preempts main here;
+      // main resumes from the very same yield once the ISR returns.
+      if (!isIsr && this.interruptsEnabled && !this.isrGen && this.isrReady()) {
+        this.scheduleWake(0, true);
         return;
       }
       if (++slices >= PUMP_SLICE) {
@@ -1413,8 +1451,13 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
             return { suspend: { kind: 'delay', us: Math.max(0, num(args[0])) } };
           case 'yield':
             return { suspend: { kind: 'delay', us: 0 } };
-          case 'noInterrupts': // cooperative model: ISRs only run at yield
-          case 'interrupts':   // points, so enabling/disabling is a no-op
+          case 'noInterrupts':
+            // F2.1: mask the entry point; edges keep latching into the queue
+            this.interruptsEnabled = false;
+            return { value: 0 };
+          case 'interrupts':
+            this.interruptsEnabled = true;
+            if (this.isrQueue.length && !this.isrGen) this.scheduleWake(0, true);
             return { value: 0 };
 
           case 'map': {
@@ -1448,9 +1491,11 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
               a.armed = true;
               const arm = (): void => {
                 a.task = this.clock.setTimeout(a.periodUs, () => {
-                  this.isrQueue.push(`timer${which}ISR`);
+                  if (!this.isrQueue.some((e) => e.fn === `timer${which}ISR`)) {
+                    this.isrQueue.push({ fn: `timer${which}ISR`, at: this.clock.now() + ISR_LATENCY_US });
+                    this.scheduleWake(ISR_LATENCY_US, true); // run the ISR promptly
+                  }
                   if (a.reload && a.armed) arm();
-                  this.scheduleWake(0, true); // give the CPU a chance to run the ISR
                 });
               };
               arm();
