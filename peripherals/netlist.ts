@@ -65,6 +65,10 @@ export interface ResolveResult {
   pinLevels: Map<string, 0 | 1>;
   /** levels imposed on MCU pins by OTHER drivers only (for the GPIO bus) */
   externals: Map<string, 0 | 1>;
+  /** F1.2: |mA| through each MCU GPIO (summed over every branch on the pin) */
+  pinCurrent: Map<number, number>;
+  /** F1.2: GPIOs a strong >3.6 V source drives (absolute-maximum violation) */
+  overvoltPins: number[];
   faults: Fault[];
   netOf: Map<string, string>;
   netVoltage: Map<string, number>;
@@ -81,6 +85,10 @@ const SEMI_R = 10;
 const DIODE_VF = 0.7;
 const VCE_SAT = 0.2;
 const RAIL_V: Record<string, number> = { GND: 0, '3V3': 3.3, '5V': 5, VIN: 5, '3.3V': 3.3 };
+/** F1.2 datasheet limits: per-GPIO source/sink, sum of all GPIOs, VDD+0.3. */
+export const PIN_MAX_MA = 12.8;
+export const PIN_TOTAL_MAX_MA = 48.8;
+export const ABS_MAX_V = 3.6;
 
 const term = (compId: string, pin: string) => `${compId}.${pin}`;
 
@@ -377,7 +385,7 @@ export class Netlist {
   }
 
   /** Highest-voltage source (ties: lowest resistance). */
-  private bestSource(from: string): { src: Source; r: number } | null {
+  private bestSource(from: string): { src: Source; r: number; at: string } | null {
     const list = this.reachSources(from).filter((s) => s.src.v > 1.65);
     if (!list.length) return null;
     list.sort((a, b) => b.src.v - a.src.v || a.r - b.r);
@@ -385,17 +393,39 @@ export class Netlist {
   }
 
   /** Lowest-voltage sink (GND-like). */
-  private bestSink(from: string): { src: Source; r: number } | null {
+  private bestSink(from: string): { src: Source; r: number; at: string } | null {
     const list = this.reachSources(from).filter((s) => s.src.v < 1.65);
     if (!list.length) return null;
     list.sort((a, b) => b.src.v - a.src.v || a.r - b.r);
     return list[0];
   }
 
+  /** GPIO number when a terminal is an MCU signal pin (rails give null). */
+  private gpioOf(t: string): number | null {
+    const dot = t.lastIndexOf('.');
+    if (dot < 0) return null;
+    const comp = this.comps.get(t.slice(0, dot));
+    if (!comp || comp.type !== 'mcu') return null;
+    const pin = t.slice(dot + 1);
+    if (pin in RAIL_V) return null;
+    const board = getBoard(String(comp.params.board ?? 'wemos-d1-mini'));
+    const g = board.gpioFor(pin);
+    return g === null || g === undefined ? null : g;
+  }
+
+  /** F1.2: book branch current against the MCU pin sitting at a terminal. */
+  private attribute(pinCurrent: Map<number, number>, t: string, mA: number): void {
+    const g = this.gpioOf(t);
+    if (g === null || mA <= 0) return;
+    pinCurrent.set(g, (pinCurrent.get(g) ?? 0) + mA);
+  }
+
   resolve(): ResolveResult {
     const leds = new Map<string, LedState>();
     const pinLevels = new Map<string, 0 | 1>();
     const externals = new Map<string, 0 | 1>();
+    const pinCurrent = new Map<number, number>();
+    const overvoltPins: number[] = [];
     const faults: Fault[] = [];
     const netOf = new Map<string, string>();
     const netVoltage = new Map<string, number>();
@@ -421,6 +451,9 @@ export class Netlist {
             brightness: Math.min(1, iMa / 20),
           };
         }
+        // F1.2: the MCU pins at the ends of this branch carry the current
+        this.attribute(pinCurrent, src.at, state.currentMa);
+        this.attribute(pinCurrent, snk.at, state.currentMa);
       }
       leds.set(c.id, state);
     }
@@ -467,6 +500,10 @@ export class Netlist {
             net: from,
             message: `${c.id} is cooking: ${Math.round(state.currentMa)} mA through it with no current-limiting resistor`,
           });
+        }
+        if (src && snk) {
+          this.attribute(pinCurrent, src.at, state.currentMa);
+          this.attribute(pinCurrent, snk.at, state.currentMa);
         }
       }
       semis.set(c.id, state);
@@ -535,10 +572,48 @@ export class Netlist {
         // External view: only OTHER strong drivers act on this pin.
         const other = list.find((s) => s.strong && s.at !== t);
         if (other) externals.set(t, other.v > 1.65 ? 1 : 0);
+        // F1.2: V(VDD)+0.3 on a signal pin is a datasheet violation, and a
+        // solid (0-ohm net) connection of such a rail destroys the pad now.
+        const killer = list.find((s) => s.strong && s.at !== t && s.v > ABS_MAX_V);
+        const g = this.gpioOf(t);
+        if (killer && g !== null && !overvoltPins.includes(g)) {
+          overvoltPins.push(g);
+          faults.push({
+            kind: 'overcurrent',
+            net: netOf.get(t)!,
+            message: `${killer.v.toFixed(1)} V on GPIO${g} exceeds the absolute maximum (VDD + 0.3 V) - the pin is destroyed`,
+          });
+        }
       }
     }
 
-    return { leds, semis, pinLevels, externals, faults, netOf, netVoltage };
+    // --- F1.2: per-pin and chip-wide GPIO current budgets ---
+    let totalMa = 0;
+    for (const [g, mA] of pinCurrent) {
+      totalMa += mA;
+      if (mA > PIN_MAX_MA * 2) {
+        faults.push({
+          kind: 'overcurrent',
+          net: `gpio${g}`,
+          message: `GPIO${g} carries ${mA.toFixed(1)} mA, more than double the ${PIN_MAX_MA} mA absolute maximum`,
+        });
+      } else if (mA > PIN_MAX_MA) {
+        faults.push({
+          kind: 'warn',
+          net: `gpio${g}`,
+          message: `GPIO${g} carries ${mA.toFixed(1)} mA, above the ${PIN_MAX_MA} mA per-pin maximum (it will not survive long)`,
+        });
+      }
+    }
+    if (totalMa > PIN_TOTAL_MAX_MA) {
+      faults.push({
+        kind: 'overcurrent',
+        net: 'gpio-total',
+        message: `total GPIO current is ${totalMa.toFixed(1)} mA, above the ${PIN_TOTAL_MAX_MA} mA the chip can carry`,
+      });
+    }
+
+    return { leds, semis, pinLevels, externals, pinCurrent, overvoltPins, faults, netOf, netVoltage };
   }
 
   /** True when both terminals join through wires / closed switches. */

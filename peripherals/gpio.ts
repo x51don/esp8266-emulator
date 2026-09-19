@@ -65,6 +65,9 @@ interface PinState {
 
 export class GpioBus {
   private pins = new Map<number, PinState>();
+  /** F1.2: destroyed output drivers (overcurrent / absolute-max violation).
+   *  Physical damage: survives reset(), cleared only by clearDamage(). */
+  private damaged = new Set<number>();
   private listeners: Array<(gpio: number, snap: PinSnapshot) => void> = [];
   /** Monotonic mutation counter; consumers cache circuit solves keyed on it. */
   version = 0;
@@ -89,7 +92,41 @@ export class GpioBus {
     return this.pin(gpio).mode;
   }
 
+  /** F1.2: destroy a pin's output driver (overcurrent / over-voltage event). */
+  damage(gpio: number): void {
+    if (!this.pins.has(gpio) || this.damaged.has(gpio)) return;
+    this.damaged.add(gpio);
+    const p = this.pin(gpio);
+    p.mode = PIN_INPUT;
+    p.latch = 0;
+    p.pwm = -1;
+    p.pull = 'none'; // the burned pad no longer pulls in either direction
+    this.notify(gpio);
+  }
+
+  isDamaged(gpio: number): boolean {
+    return this.damaged.has(gpio);
+  }
+
+  /** All destroyed pins (GUI: persistent "dead pad" markers). */
+  damagedPins(): number[] {
+    return [...this.damaged].sort((a, b) => a - b);
+  }
+
+  /** GUI action: swap in a fresh board. Does not run a chip reset. */
+  clearDamage(gpio?: number): void {
+    if (gpio === undefined) {
+      if (!this.damaged.size) return;
+      for (const g of this.damaged) this.notify(g);
+      this.damaged.clear();
+      return;
+    }
+    if (!this.damaged.delete(gpio)) return;
+    this.notify(gpio);
+  }
+
   setMode(gpio: number, mode: PinMode): void {
+    if (this.damaged.has(gpio)) return; // a dead pad does not reconfigure
     const p = this.pin(gpio);
     // the sketch's mode owns the pad resistor: INPUT_PULLUP is the same ~45k
     // resistor the boot straps use, and ANY pinMode() call switches that
@@ -104,6 +141,7 @@ export class GpioBus {
   }
 
   write(gpio: number, level: 0 | 1 | boolean): void {
+    if (this.damaged.has(gpio)) return; // a dead pad cannot drive
     const p = this.pin(gpio);
     const v = level ? 1 : 0;
     if (p.latch === v && p.pwm === -1) return;
@@ -113,6 +151,7 @@ export class GpioBus {
   }
 
   analogWrite(gpio: number, duty: number): void {
+    if (this.damaged.has(gpio)) return;
     const p = this.pin(gpio);
     const d = Math.max(0, Math.min(1023, Math.trunc(duty)));
     const modeChanged = p.mode !== PIN_OUTPUT;
@@ -135,6 +174,7 @@ export class GpioBus {
 
   /** What the pin imposes on the external circuit. */
   driveState(gpio: number): DriveState {
+    if (this.damaged.has(gpio)) return { kind: 'float' }; // burned pad: dead
     const p = this.pin(gpio);
     const strong = p.mode === PIN_OUTPUT;
     const isOpenDrain = gpio === 16;

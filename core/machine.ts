@@ -23,7 +23,7 @@ import {
   GpioRegisters, GPIO_OUT_W1TS, GPIO_OUT_W1TC, GPIO_ENABLE_W1TS, GPIO_ENABLE_W1TC,
 } from './registers';
 import { GpioBus, PIN_INPUT, PIN_OUTPUT, PIN_INPUT_PULLUP } from '../peripherals/gpio';
-import { Netlist, type ResolveResult } from '../peripherals/netlist';
+import { Netlist, PIN_MAX_MA, type ResolveResult } from '../peripherals/netlist';
 import { Interpreter, type SketchGen, type HostResult, type HostValue } from './sketch/interp';
 import { parse } from './sketch/parser';
 import { getBoard } from './boards';
@@ -109,6 +109,8 @@ export class Esp8266Machine implements LanHost {
   private machinePhase: MachinePhase = 'loaded';
   /** Boot mode latched by the last run() (strap sampling at reset release). */
   private boot: BootMode = 'flash';
+  /** F1.2: accumulated per-GPIO overcurrent stress in ms (damage at 1000). */
+  private pinStress = new Map<number, number>();
   private cpuTask: TimerId | null = null;
   private isrTask: TimerId | null = null;
   private alarms = new Map<number, Alarm>();
@@ -270,6 +272,7 @@ export class Esp8266Machine implements LanHost {
     this.clock.restart();
     this.registers.reset();
     this.gpio.reset();
+    this.pinStress.clear(); // fresh electrical conditions (damage persists)
     this.serialLog = [];
     this.alarms.clear();
     this.wifi.connectAt = null;
@@ -322,6 +325,7 @@ export class Esp8266Machine implements LanHost {
     this.clock.restart();
     this.registers.reset();
     this.gpio.reset();
+    this.pinStress.clear();
     this.alarms.clear();
     this.serialLog = [];
     this.printBuf = '';
@@ -353,6 +357,36 @@ export class Esp8266Machine implements LanHost {
       return;
     }
     this.resolveCircuit();
+    this.accumulatePinStress(Math.round(ms * 1000) / 1000); // F1.2
+  }
+
+  /**
+   * F1.2: a pin over its 12.8 mA budget degrades before it dies. Each ms of
+   * overload adds time scaled by how far over the limit the pin sits; a full
+   * second of accumulated stress burns the driver out. Over-voltage (5 V on a
+   * 3V3 pin) is instant. Accumulator resets whenever the pin is back in spec.
+   */
+  private accumulatePinStress(ms: number): void {
+    const r = this.lastCircuit;
+    if (!r || ms <= 0) return;
+    for (const g of r.overvoltPins) this.killPin(g);
+    for (const [g, mA] of r.pinCurrent) {
+      if (this.gpio.isDamaged(g)) continue;
+      if (mA <= PIN_MAX_MA) {
+        this.pinStress.delete(g);
+        continue;
+      }
+      const acc = (this.pinStress.get(g) ?? 0) + ms * (mA / PIN_MAX_MA);
+      if (acc >= 1000) this.killPin(g);
+      else this.pinStress.set(g, acc);
+    }
+  }
+
+  /** Destroy one pin (already fault-reported by the solver). */
+  private killPin(gpio: number): void {
+    if (this.gpio.isDamaged(gpio)) return;
+    this.pinStress.delete(gpio);
+    this.gpio.damage(gpio);
   }
 
   timeMs(): number {
@@ -398,6 +432,7 @@ export class Esp8266Machine implements LanHost {
   circuit(): ResolveResult {
     return this.lastCircuit ?? {
       leds: new Map(), semis: new Map(), pinLevels: new Map(), externals: new Map(),
+      pinCurrent: new Map(), overvoltPins: [],
       faults: [], netOf: new Map(), netVoltage: new Map(),
     };
   }
@@ -928,6 +963,15 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
       this.gpio.setExternalDriver(rail.gpio, level === undefined ? 'none' : level ? 'high' : 'low');
     }
     this.lastCircuit = r;
+    // F1.2: burned pads are permanent physical facts - keep showing them as
+    // faults even though the dead pin draws no current any more.
+    for (const g of this.gpio.damagedPins()) {
+      r.faults.push({
+        kind: 'overcurrent',
+        net: `gpio${g}`,
+        message: `GPIO${g} output driver is destroyed (overcurrent / over-voltage) - the pad reads dead`,
+      });
+    }
     if (this.circuitListeners.length) {
       for (const cb of this.circuitListeners) cb(r);
     }

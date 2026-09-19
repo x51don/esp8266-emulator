@@ -111,7 +111,19 @@ czyta float. Osobno: silne źródło >3.6 V (rail 5V) bezpośrednio na pinie syg
 (< 100 Ω) -> natychmiast damage + fault "abs max exceeded".
 Suma > 48.8 mA -> fault 'overcurrent' "total GPIO current" (brownout model).
 
-**Status.** TODO
+**Status.** DONE 2026-09-19. Netlist: `ResolveResult.pinCurrent` (atrybucja
+prądów gałęzi LED/semis do pinów MCU przez `src.at`/`snk.at`), fault 'warn'
+>12.8 mA, 'overcurrent' >25.6 mA i >48.8 mA sumy; `overvoltPins` (silne
+>3.6 V na 0-omowej sieci pinu) + fault "absolute maximum". Maszyna:
+akumulator `pinStress` w `advance()` (przeciążenie × czas; 1000 ms ->
+`gpio.damage()`), over-volt = natychmiast. `GpioBus.damage/isDamaged/
+damagedPins/clearDamage`: pad = float na stałe, przeżywa reset(), write/
+setMode/analogWrite no-op; uszkodzone piny dostają trwały fault w
+`resolveCircuit`. OGRANICZENIA (udokumentowane): prąd liczy się tylko dla
+gałęzi LED/semis (cewka relay i buzzer bez modelu prądowego); 5 V przez
+szeregowy rezystor nie flaguje over-voltu (solver liczy napięcia po
+rezystorach osobno), 5 V drutem - flaguje i zabija.
+Testy: `tests/electrical.test.ts` (6).
 
 ---
 
@@ -303,3 +315,4 @@ trasowania w LAN).
 
 - (start) audyt wykonany, plik utworzony, nic nie zmienione w kodzie.
 - 2026-09-19 | F1.1 boot straps | tests/bootmode.test.ts 8x red -> green; suite 493/493 | przy okazji usunięty duplikat `case 'setReuse'` (warning esbuild).
+- 2026-09-19 | F1.2 limity prądowe + palenie pinu | tests/electrical.test.ts 6x red -> green; suite 499/499 | model termiczny: 1 s przeciążenia = pad martwy; over-volt 5V drutem = natychmiast.
