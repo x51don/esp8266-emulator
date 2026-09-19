@@ -134,3 +134,10 @@ Szczoly: `milestone_14_eeprom.md`.
 
 `MDNS.begin(nazwa)` + resolver w `HTTPClient`/panelu (`pokoj.local`).
 Szczegóły: `milestone_15_mdns.md`.
+
+---
+
+## F8 - czas/NTP (z listy braków) - ZROBIONE
+
+`configTime`/`time`/`localTime` + TimeLib; epoka = zegar sciankowy +
+czas wirtualny. Szczegoly: `milestone_16_time.md`.

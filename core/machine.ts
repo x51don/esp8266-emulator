@@ -134,6 +134,12 @@ export class Esp8266Machine implements LanHost {
   private restartRequested = false;
   /** F7: names announced via MDNS.begin, released on dispose */
   private mdnsNames = new Set<string>();
+  /** F8: NTP lock; epoch = wall clock at boot + virtual time since the lock */
+  private ntp: { syncAt: number | null; gmtOff: number; dstOff: number } = {
+    syncAt: null, gmtOff: 0, dstOff: 0,
+  };
+  /** F8: TimeLib setTime() base, or null when now() follows the NTP epoch */
+  private timeLib: { base: number; setAt: number } | null = null;
   /** F6: the emulated flash sector; survives run()/restart, not the GC. */
   private eeprom = new Uint8Array(4096).fill(0xff);
   /** bumps on every commit() - the GUI uses it to mark a project dirty */
@@ -238,6 +244,8 @@ export class Esp8266Machine implements LanHost {
     this.serialLog = [];
     this.alarms.clear();
     this.wifi.connectAt = null;
+    this.ntp = { syncAt: null, gmtOff: 0, dstOff: 0 };
+    this.timeLib = null;
     this.wifi.objs.clear();
     this.interp = new Interpreter(parse(this.source), this.env());
     this.machinePhase = 'running';
@@ -348,6 +356,12 @@ export class Esp8266Machine implements LanHost {
    * console with a [net->host:port] tag - the "Serial-only dashboard".
    * available()/read() stay empty: outside clients cannot connect here.
    */
+  /** F8: locked NTP epoch in seconds (virtual-time-corrected), 0 while syncing */
+  private ntpEpochSec(): number {
+    if (this.ntp.syncAt === null || this.clock.now() < this.ntp.syncAt) return 0;
+    return Math.floor((Date.now() + (this.clock.now() - this.ntp.syncAt) / 1000) / 1000);
+  }
+
   /** 4 KiB emulated EEPROM (core layout: LE lengths, raw ints/floats). */
   eepromBytes(): Uint8Array {
     return this.eeprom.slice();
@@ -974,6 +988,7 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
       A0: 17, // ESP8266 Arduino core: analogRead() uses pin 17
       HTTP_ANY: 7, HTTP_GET: 1, HTTP_HEAD: 4, HTTP_POST: 2, HTTP_PATCH: 64, HTTP_PUT: 8,
       NEO_KHZ400: 0x100, NEO_KHZ800: 0x800,
+      NULL: 0, nullptr: 0, // Arduino.h / C++11
       NEO_GRB: 0x00, NEO_RGB: 0x08, NEO_BRG: 0x10, NEO_RBG: 0x18, NEO_BGR: 0x20,
     };
     for (let d = 0; d <= 8; d++) {
@@ -1312,6 +1327,54 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
             return wait > 0
               ? { suspend: { kind: 'delay', us: wait }, value: 3 }
               : { value: 3 };
+          }
+
+          // ---- time & NTP (milestone 15) ----
+          case 'configTime':
+            this.ntp.gmtOff = num(args[0]);
+            this.ntp.dstOff = args.length > 1 ? num(args[1]) : 0;
+            if (this.ntp.syncAt === null) this.ntp.syncAt = this.clock.now() + 500_000;
+            return { value: 0 };
+          case 'setTimeZone':
+            this.ntp.gmtOff = num(args[0]);
+            if (args.length > 1) this.ntp.dstOff = num(args[1]);
+            return { value: 0 };
+          case 'time': case 'getEpochTime':
+            return { value: this.ntpEpochSec() };
+          case 'localTime':
+            return { value: this.ntp.syncAt !== null ? this.ntpEpochSec() + this.ntp.gmtOff + this.ntp.dstOff : 0 };
+          case 'getDaylightOffset':
+            return { value: this.ntp.dstOff };
+          case 'setSyncProvider': case 'setSyncInterval': case 'setSyncTickInterval':
+            return { value: 0 };
+          case 'setTime':
+            this.timeLib = { base: args.length ? num(args[0]) : 0, setAt: this.clock.now() };
+            return { value: 0 };
+          case 'now':
+            return { value: this.timeLib
+              ? this.timeLib.base + Math.floor((this.clock.now() - this.timeLib.setAt) / 1_000_000)
+              : this.ntpEpochSec() };
+          case 'hour': case 'minute': case 'second': case 'day': case 'month':
+          case 'year': case 'weekday': case 'dayOfWeek': case 'dayOfYear':
+          case 'isPm': case 'isLeapYear': {
+            const t = args.length
+              ? num(args[0])
+              : this.timeLib
+                ? this.timeLib.base + Math.floor((this.clock.now() - this.timeLib.setAt) / 1_000_000)
+                : this.ntpEpochSec();
+            const d = new Date(t * 1000);
+            switch (name) {
+              case 'hour': return { value: Math.floor(t / 3600) % 24 };
+              case 'minute': return { value: Math.floor(t / 60) % 60 };
+              case 'second': return { value: t % 60 };
+              case 'day': case 'dayOfWeek': return { value: d.getUTCDate() };
+              case 'weekday': return { value: d.getUTCDay() === 0 ? 1 : d.getUTCDay() + 1 }; // TimeLib: Sunday = 1
+              case 'month': return { value: d.getUTCMonth() + 1 };
+              case 'year': return { value: d.getUTCFullYear() };
+              case 'dayOfYear': return { value: Math.floor(t / 86400) % 366 + 1 };
+              case 'isPm': return { value: (Math.floor(t / 3600) % 24 + 11) % 12 + 1 };
+              default: return { value: (d.getUTCFullYear() % 4 === 0 && d.getUTCFullYear() % 100 !== 0) || d.getUTCFullYear() % 400 === 0 ? 1 : 0 };
+            }
           }
 
           // ---- mDNS + OTA: accepted, not simulated (milestone 12) ----
