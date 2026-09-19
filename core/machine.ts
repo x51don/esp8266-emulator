@@ -140,6 +140,8 @@ export class Esp8266Machine implements LanHost {
   };
   /** F8: TimeLib setTime() base, or null when now() follows the NTP epoch */
   private timeLib: { base: number; setAt: number } | null = null;
+  /** F9: ESP.deepSleep(us) - µs timestamp of the wake-up (a delayed reset) */
+  private wakeAt: number | null = null;
   /** F6: the emulated flash sector; survives run()/restart, not the GC. */
   private eeprom = new Uint8Array(4096).fill(0xff);
   /** bumps on every commit() - the GUI uses it to mark a project dirty */
@@ -308,6 +310,11 @@ export class Esp8266Machine implements LanHost {
     if (this.restartRequested) {
       this.restartRequested = false;
       this.run(); // a board reset clears the sketch state and serial buffer
+      return;
+    }
+    if (this.wakeAt !== null && this.clock.now() >= this.wakeAt) {
+      this.wakeAt = null; // F9: deep-sleep wake-up is a reset as well
+      this.run();
       return;
     }
     this.resolveCircuit();
@@ -1297,6 +1304,13 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
 
           // ---- ESP. helpers ----
           case 'ESP.wdtFeed': case 'ESP.sleep':
+            return { value: 0 };
+          case 'ESP.deepSleep': case 'ESP.deepSleepStart':
+            // µs argument (mode ignored); wake-up = reset in advance()
+            this.wakeAt = this.clock.now() + Math.max(1, Math.round(num(args[0])));
+            return { value: 0 };
+          case 'ESP.deepSleepEnd':
+            this.wakeAt = null;
             return { value: 0 };
           case 'ESP.restart':
             this.restartRequested = true;
