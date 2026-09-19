@@ -108,9 +108,23 @@ export function App() {
   const devicesState = useRef(devices);
   devicesState.current = devices;
 
+  // every machine - including the adopted placeholder - routes serial and
+  // faults through the same handlers, filtered to the active device id
+  const watchMachine = useCallback((m: Esp8266Machine, devId: number) => {
+    m.onSerial((line) => {
+      if (activeRef.current === devId)
+        setSerialLines((prev) => (prev.length > 600 ? [...prev.slice(-500), line] : [...prev, line]));
+    });
+    m.onFault((reason) => {
+      setError(reason);
+      if (activeRef.current === devId) setRunning(false);
+    });
+  }, []);
+
   // adopt the placeholder machine as device #1 (declared BEFORE the sync
   // effect so it runs first on mount; its sketch is the restored editor text)
   useEffect(() => {
+    watchMachine(machineRef.current, 1);
     machinesRef.current.set(1, machineRef.current);
     machineBoard.current.set(1, boardId);
     sketchesRef.current.set(1, sketchRef.current);
@@ -143,14 +157,7 @@ export function App() {
         pendingEeprom.current = null;
       }
       machineBoard.current.set(dev.id, boardId);
-      m.onSerial((line) => {
-        if (activeRef.current === dev.id)
-          setSerialLines((prev) => (prev.length > 600 ? [...prev.slice(-500), line] : [...prev, line]));
-      });
-      m.onFault((reason) => {
-        setError(reason);
-        if (activeRef.current === dev.id) setRunning(false);
-      });
+      watchMachine(m, dev.id);
       machinesRef.current.set(dev.id, m);
     }
     // keep the board component in the document in sync with the toolbar

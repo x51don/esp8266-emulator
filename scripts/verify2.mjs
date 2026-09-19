@@ -78,6 +78,7 @@ if (!ws) throw new Error('chromium CDP endpoint never appeared');
 const cdp = new Cdp(ws);
 await cdp.send('Runtime.enable');
 await cdp.send('Page.enable');
+await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
 await cdp.send('Page.navigate', { url: URL_ });
 await sleep(2500);
 check('app mounts', (await cdp.eval(`!!window.__emu`)) === true);
