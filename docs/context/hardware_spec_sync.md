@@ -184,7 +184,18 @@ noInterrupts/interrupts = no-op [machine.ts:1324].
 (generator zachowuje stan). Latencja: `scheduleWake(ISR_LATENCY_US)` zamiast
 0 w checkInterrupts/timer/ticker. `interruptsEnabled=false` -> ISR tylko do
 kolejki, odpalane po `interrupts()`.
-**Status.** TODO
+
+**Status.** DONE 2026-09-19. `isrQueue: {fn, at}[]` - wpis gotowy po
+`ISR_LATENCY_US = 2` µs; latencja wymuszana per wpis, nawet gdy main yielduje
+wcześniej. `step()` startuje ISR bez wymogu `mainSuspended` (wywłaszczenie w
+dowolnym punkcie), `runGen` oddaje sterowanie przy każdym yield (tick i delay),
+gdy ISR gotowy. `noInterrupts()` maskuje wejście (krawędzie zostają w
+kolejce), `interrupts()` odblokowuje i kopie lane. Pending-bit: drugi krawędź
+tego samego fn scala się w kolejce (przycisk drgający z maską = 1 ISR, nie N).
+Timer0/1 i Ticker idą tą samą kolejką z latencją. Odstępstwo (wdrukowane w
+nagłówek machine.ts): wywłaszczenie na punktach yield generatora, nie w środku
+instrukcji.
+Testy: `tests/irq.test.ts` (6); stare testy przerwań przeszły bez zmian.
 
 ---
 
@@ -325,3 +336,4 @@ trasowania w LAN).
 - 2026-09-19 | F1.1 boot straps | tests/bootmode.test.ts 8x red -> green; suite 493/493 | przy okazji usunięty duplikat `case 'setReuse'` (warning esbuild).
 - 2026-09-19 | F1.2 limity prądowe + palenie pinu | tests/electrical.test.ts 6x red -> green; suite 499/499 | model termiczny: 1 s przeciążenia = pad martwy; over-volt 5V drutem = natychmiast.
 - 2026-09-19 | F1.3 Vf diody + drganie styków | tests/debounce.test.ts 8x red -> green; suite 507/507 | bounce oknem czasu wirtualnego (determ.); zbocza w jednym advance scalą się do 1 ISR; +digitalPinToInterrupt.
+- 2026-09-19 | F2.1 przerwania: wywłaszczenie + latencja 2 us + maska | tests/irq.test.ts 6x red -> green; suite 513/513 | ISR startuje przy yield głównego kodu (busy loop też); pending-bit scala krawędzie; timer i Ticker wspólną kolejką.
