@@ -118,10 +118,28 @@ Ograniczenia: methods na surowym literale (`"x".length()`) nie
 parsują się (parser: `ident.metoda()`); `char*`/String metody mutujące
 (`trim`, `replace`) bez implementacji (brak semantyki mutacji).
 
-## F4 - NeoPixel obiektowo + IPAddress (pending)
+## F4 - Adafruit_NeoPixel + IPAddress (done)
 
-`Adafruit_NeoPixel strip = Adafruit_NeoPixel(no, pin, typ)` spięty z
-komponentem neopixel; `begin/show/clear/numPixels/Color/setPixelColor`.
+`core/machine.ts`: dispatch obiektów w gałęzi `default` liczy się z
+rodzajem odbiornika - `Adafruit_NeoPixel` idzie do `npCall`,
+`IPAddress` do `ipCall`, reszta do `wifiCall`.
+
+- `npCall`: konstruktor trzyma `[count, gpio, khz]` w `obj.args`;
+  paski tworzone leniwie przez `sensorAt('neopixel', gpio)` - bez
+  dolutowanego paska API odpowiada, zapisy spadają (jak prawdziwy
+  pin zwisający w powietrze). Metody: `begin/show/sync/clear/
+  setBrightness(+Color)/updateLength/updatePinAndMap/setPin/
+  setByteOrder/numPixels/Color/gamma32/setPixelColor/getPixelColor`.
+  Pakowanie koloru Adafruita (`G<<16|R<<8|B`) rozpakowywane do
+  netlistowego `RRGGBB`; długość fizyczna paska (komponent) nadal
+  wygrywa z deklaracją szkicu.
+- `ipCall`: `toString()` (kropki) i `fromString()`.
+- Stałe `NEO_KHZ400/800`, `NEO_GRB/RGB/BRG/RBG/BGR` w `env.constants`.
+
+Testy: `tests/neopixel-f4.test.ts` (5): pełny cykl konstruktora,
+clear+brightness, getPixelColor (packing Adafruita), brak paska =
+ciche ignorowanie, wzorzec lampy v20 przez funkcję z parametrami
+`uint8_t`. 391/391.
 
 ## F5 - wirtualny LAN + WebServer + HTTPClient + panel HTTP (pending)
 

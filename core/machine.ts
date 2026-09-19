@@ -59,6 +59,15 @@ const SETUP_YIELD_BUDGET = 400_000;
  *  what fell off (reset by run()). */
 const MAX_SERIAL_LINES = 5000;
 
+/** Shared shape for every registered library object (wifi.objs). */
+interface LibObj {
+  kind: string;
+  port: number;
+  peer: string | null;
+  listening: boolean;
+  args: number[];
+}
+
 export class Esp8266Machine {
   readonly clock = new Clock();
   readonly registers: GpioRegisters;
@@ -298,6 +307,78 @@ export class Esp8266Machine {
    * console with a [net->host:port] tag - the "Serial-only dashboard".
    * available()/read() stay empty: outside clients cannot connect here.
    */
+private npCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
+  const num = (v: HostValue | undefined): number => (typeof v === 'number' ? v : Number(v ?? 0));
+  // Adafruit packs Color() as G<<16|R<<8|B; the netlist strip stores RR GG BB
+  const unpack = (c: number) => ({ r: (c >> 8) & 0xff, g: (c >> 16) & 0xff, b: c & 0xff });
+  const strip = (): { count: number; physical: number; pixels: number[] } | null => {
+    const gpio = obj.args[1] ?? 0;
+    let st = this.npStrips.get(gpio);
+    if (!st) {
+      const comp = this.sensorAt('neopixel', gpio, 'din');
+      if (!comp) return null; // nothing wired: the API answers, writes drop
+      const physical = Math.max(1, Math.min(64, Number(comp.params.count ?? 8) || 8));
+      const count = Math.max(1, Math.min(64, obj.args[0] || 8));
+      st = { count, physical, pixels: Array.from({ length: physical }, () => 0) };
+      this.npStrips.set(gpio, st);
+    }
+    return st;
+  };
+  switch (meth) {
+    case 'begin': case 'show': case 'sync': case 'setBrightness':
+    case 'setBrightnessColor': case 'updateLength': case 'updatePinAndMap':
+    case 'setPin': case 'setByteOrder':
+      return { value: 0 };
+    case 'numPixels':
+      return { value: Math.max(1, Math.min(64, obj.args[0] || 8)) };
+    case 'Color': {
+      const [r, g, b] = args.map((a) => num(a));
+      return { value: (((g & 0xff) << 16) | ((r & 0xff) << 8) | (b & 0xff)) >>> 0 };
+    }
+    case 'gamma32':
+      return { value: num(args[0]) };
+    case 'setPixelColor': {
+      const st = strip();
+      if (!st) return { value: 0 };
+      const i = num(args[0]);
+      const c = unpack(num(args[1]));
+      if (i >= 0 && i < st.count && i < st.pixels.length)
+        st.pixels[i] = (c.r << 16) | (c.g << 8) | c.b;
+      return { value: 0 };
+    }
+    case 'getPixelColor': {
+      const st = strip();
+      if (!st) return { value: 0 };
+      const p = st.pixels[num(args[0])] ?? 0;
+      return { value: (((p >> 8) & 0xff) << 16) | (((p >> 16) & 0xff) << 8) | (p & 0xff) };
+    }
+    case 'clear': {
+      const st = strip();
+      if (!st) return { value: 0 };
+      const c = unpack(num(args[0]));
+      st.pixels.fill((c.r << 16) | (c.g << 8) | c.b);
+      return { value: 0 };
+    }
+    default:
+      throw new Error(`'Adafruit_NeoPixel' has no method '${meth}'`);
+  }
+}
+
+private ipCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
+  switch (meth) {
+    case 'toString':
+      return { value: obj.args.slice(0, 4).join('.') };
+    case 'fromString': {
+      const parts = String(args[0] ?? '').split('.').map((x) => parseInt(x, 10) || 0);
+      if (parts.length !== 4) return { value: 0 };
+      obj.args = parts;
+      return { value: 1 };
+    }
+    default:
+      throw new Error(`'IPAddress' has no method '${meth}'`);
+  }
+}
+
   private wifiCall(
     obj: { kind: string; port: number; peer: string | null; listening: boolean },
     meth: string,
@@ -569,6 +650,8 @@ export class Esp8266Machine {
       WL_CONNECTED: 3, WL_CONNECT_FAILED: 4, WL_CONNECTION_LOST: 5, WL_DISCONNECTED: 6,
       WIFI_STA: 1, WIFI_AP: 2, WIFI_AP_STA: 3,
       A0: 17, // ESP8266 Arduino core: analogRead() uses pin 17
+      NEO_KHZ400: 0x100, NEO_KHZ800: 0x800,
+      NEO_GRB: 0x00, NEO_RGB: 0x08, NEO_BRG: 0x10, NEO_RBG: 0x18, NEO_BGR: 0x20,
     };
     for (let d = 0; d <= 8; d++) {
       const gpio = board.gpioFor(`D${d}`);
@@ -936,8 +1019,14 @@ export class Esp8266Machine {
           case 'WiFiServer': return { value: args.length ? num(args[0]) : 80 };
 
           default: {
-            const obj = name.includes('.') ? this.wifi.objs.get(name.slice(0, name.indexOf('.'))) : undefined;
-            if (obj) return this.wifiCall(obj, name.slice(name.indexOf('.') + 1), args);
+            const dot = name.indexOf('.');
+            const obj = dot > 0 ? this.wifi.objs.get(name.slice(0, dot)) : undefined;
+            if (obj) {
+              const meth = name.slice(dot + 1);
+              if (obj.kind === 'Adafruit_NeoPixel') return this.npCall(obj, meth, args);
+              if (obj.kind === 'IPAddress') return this.ipCall(obj, meth, args);
+              return this.wifiCall(obj, meth, args);
+            }
             throw new Error(`function '${name}' is not implemented on the emulated ESP8266`);
           }
         }
