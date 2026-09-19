@@ -18,6 +18,7 @@ describe('example presets', () => {
       'neopixel-chase.ino',
       'hcsr-serial.ino',
       'relay-pump.ino',
+      'transistor-switch.ino',
       'web-server.ino',
       'lan-server.ino',
       'lan-client.ino',

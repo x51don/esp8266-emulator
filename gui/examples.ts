@@ -19,6 +19,7 @@ import servoPot from '../examples/servo-pot.ino?raw';
 import npChase from '../examples/neopixel-chase.ino?raw';
 import hcsrSerial from '../examples/hcsr-serial.ino?raw';
 import relayPump from '../examples/relay-pump.ino?raw';
+import transistorSwitch from '../examples/transistor-switch.ino?raw';
 import webServer from '../examples/web-server.ino?raw';
 import lanServer from '../examples/lan-server.ino?raw';
 import lanClient from '../examples/lan-client.ino?raw';
@@ -35,6 +36,7 @@ export const EXAMPLE_SKETCHES: Record<string, string> = {
   'neopixel-chase.ino': npChase,
   'hcsr-serial.ino': hcsrSerial,
   'relay-pump.ino': relayPump,
+  'transistor-switch.ino': transistorSwitch,
   'web-server.ino': webServer,
   'lan-server.ino': lanServer,
   'lan-client.ino': lanClient,
@@ -203,6 +205,29 @@ export function loadExample(name: string, boardId: string): Schematic {
       wire(sc, { comp: rl.id, pin: 'no' }, { comp: led.id, pin: 'a' });
       wire(sc, { comp: led.id, pin: 'k' }, { comp: rl_r.id, pin: 'p1' });
       wire(sc, { comp: rl_r.id, pin: 'p2' }, { comp: board.id, pin: 'GND' });
+      break;
+    }
+    case 'transistor-switch.ino': {
+      const board = sc.boardComponent()!;
+      const p = pinWorld(sc, 'D2');
+      // NPN low-side switch: D2 - 1k - base; 5V - 220R - LED - collector
+      const rb = sc.add('resistor', p.x + 140, p.y, { resistance: 1000 });
+      const q = sc.add('transistor', p.x + 260, p.y, { polarity: 'npn' });
+      const rc = sc.add('resistor', p.x + 260, p.y - 140, { resistance: 220 });
+      const led = sc.add('led', p.x + 400, p.y - 140, { forwardV: 2 });
+      wire(sc, { comp: board.id, pin: 'D2' }, { comp: rb.id, pin: 'p1' });
+      wire(sc, { comp: rb.id, pin: 'p2' }, { comp: q.id, pin: 'b' });
+      wire(sc, { comp: q.id, pin: 'e' }, { comp: board.id, pin: 'GND' });
+      wire(sc, { comp: board.id, pin: '5V' }, { comp: rc.id, pin: 'p1' });
+      wire(sc, { comp: rc.id, pin: 'p2' }, { comp: led.id, pin: 'a' });
+      wire(sc, { comp: led.id, pin: 'k' }, { comp: q.id, pin: 'c' });
+      // 3.3V Zener clamping the 5V rail branch (reverse-biased, glows)
+      const pz = pinWorld(sc, '3V3');
+      const rz = sc.add('resistor', pz.x + 140, pz.y + 220, { resistance: 470 });
+      const z = sc.add('zener', pz.x + 300, pz.y + 220, { vz: 3.3 });
+      wire(sc, { comp: board.id, pin: '5V' }, { comp: rz.id, pin: 'p1' });
+      wire(sc, { comp: rz.id, pin: 'p2' }, { comp: z.id, pin: 'k' });
+      wire(sc, { comp: z.id, pin: 'a' }, { comp: board.id, pin: 'GND' });
       break;
     }
     default:

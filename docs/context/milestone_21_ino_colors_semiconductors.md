@@ -77,3 +77,7 @@ blokuje LED2, symbole malują piksele. Testy jednostkowe:
 
 `npx vitest run` 41 plik / 459 testów, `tsc --noEmit` czysto, `vite build`
 OK, `verify11/12/13` ALL OK.
+
+Dopisek: przyklad `transistor-switch.ino` - NPN jako sterownik LED z D2
+oraz Zener 3.3 V w rozwarciu na gałęzi 5V (swieci sie podczas pracy);
+preset podlaczony, testy `tests/examples.test.ts` + E2E `verify14.mjs`.
