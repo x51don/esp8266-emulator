@@ -19,6 +19,8 @@ describe('example presets', () => {
       'hcsr-serial.ino',
       'relay-pump.ino',
       'web-server.ino',
+      'lan-server.ino',
+      'lan-client.ino',
     ]);
   });
 

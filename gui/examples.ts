@@ -20,6 +20,8 @@ import npChase from '../examples/neopixel-chase.ino?raw';
 import hcsrSerial from '../examples/hcsr-serial.ino?raw';
 import relayPump from '../examples/relay-pump.ino?raw';
 import webServer from '../examples/web-server.ino?raw';
+import lanServer from '../examples/lan-server.ino?raw';
+import lanClient from '../examples/lan-client.ino?raw';
 
 export const EXAMPLE_SKETCHES: Record<string, string> = {
   'blink.ino': blink,
@@ -34,6 +36,8 @@ export const EXAMPLE_SKETCHES: Record<string, string> = {
   'hcsr-serial.ino': hcsrSerial,
   'relay-pump.ino': relayPump,
   'web-server.ino': webServer,
+  'lan-server.ino': lanServer,
+  'lan-client.ino': lanClient,
 };
 
 export const EXAMPLE_NAMES = Object.keys(EXAMPLE_SKETCHES);
@@ -133,6 +137,11 @@ export function loadExample(name: string, boardId: string): Schematic {
       break;
     case 'web-server.ino':
       addLedChain(sc, 'D4'); // the /led endpoint flips it
+      break;
+    case 'lan-server.ino':
+      addLedChain(sc, 'D4');
+      break;
+    case 'lan-client.ino':
       break;
     case 'pot-serial.ino':
       addPot(sc, 'A0');

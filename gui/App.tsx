@@ -544,6 +544,11 @@ export function App() {
             <span className="device-ip">
               .{(machinesRef.current.get(d.id)?.ip ?? d.ip).split('.').pop()}
             </span>
+            {machinesRef.current.get(d.id)?.sleepRemainingMs() != null && (
+              <span className="device-sleep" title="deep sleep until wake-up">
+                {' '}z<span className="device-z">z</span>
+              </span>
+            )}
           </button>
         ))}
         <button className="device-chip device-add" onClick={onAddDevice} title="Add another ESP8266 to the LAN">

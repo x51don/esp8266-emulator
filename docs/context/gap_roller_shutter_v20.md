@@ -162,3 +162,9 @@ Milestone 19, E2E verify9 ALL OK.
 
 Z listy zostaja tylko pozycje bez uzasadnienia w emulatorze
 (`WiFi.onEvent` - brak stacji WiFi; HTTPS/WebSockets - poza zasiegiem).
+
+## F12 - przyklady LAN + wskaznik snu (ZROBIONE)
+
+`lan-server.ino`/`lan-client.ino` w Examples (para na dwie lawki),
+`sleepRemainingMs()` + `zZ` na chipie urzadzenia, fix: `run()` kasuje
+`wakeAt`. Milestone 20.

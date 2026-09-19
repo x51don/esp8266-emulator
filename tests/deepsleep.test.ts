@@ -48,3 +48,25 @@ describe('ESP.deepSleep (F9)', () => {
     expect(m.faultReason).toBe(null);
   });
 });
+
+describe('sleepRemainingMs', () => {
+  it('counts down the pending wake-up and clears at boot', () => {
+    const m = new Esp8266Machine({ board: 'wemos-d1-mini', ip: '192.168.1.230' });
+    m.load(`
+void setup() { ESP.deepSleep(10000000); }
+void loop() { delay(100); }
+`);
+    m.run();
+    expect(m.sleepRemainingMs()).toBe(10000);
+    m.advance(5000);
+    expect(m.sleepRemainingMs()).toBe(5000);
+    // like real hardware the wake reboots from zero, so setup sleeps again
+    m.advance(5010);
+    expect(m.sleepRemainingMs()).toBe(10000);
+    m.load('void setup() {}\nvoid loop() { delay(100); }');
+    m.run();
+    expect(m.sleepRemainingMs()).toBe(null);
+    expect(m.faultReason).toBe(null);
+    m.dispose();
+  });
+});

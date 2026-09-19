@@ -246,6 +246,8 @@ export class Esp8266Machine implements LanHost {
       throw new Error('no sketch loaded - call load(source) first');
     }
     this.restartRequested = false;
+    // a fresh boot is awake; a pending deep-sleep belongs to the old boot
+    this.wakeAt = null;
     this.halt();
     this.clock.restart();
     this.registers.reset();
@@ -370,6 +372,11 @@ export class Esp8266Machine implements LanHost {
    * console with a [net->host:port] tag - the "Serial-only dashboard".
    * available()/read() stay empty: outside clients cannot connect here.
    */
+  /** F9: milliseconds until a pending deep-sleep wake lands (null: awake) */
+  sleepRemainingMs(): number | null {
+    return this.wakeAt === null ? null : Math.max(0, Math.ceil((this.wakeAt - this.clock.now()) / 1000));
+  }
+
   /** F10: adopt a static IP mid-flight (mDNS names follow the lease) */
   setLanIp(ip: string): void {
     if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip) || ip === this._ip) return;

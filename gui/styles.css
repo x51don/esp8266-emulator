@@ -565,3 +565,6 @@ body {
 .device-ip { color: #6fd08c; }
 .device-add { color: #6fd08c; }
 .device-del { color: #e06c75; }
+
+.device-sleep { color: #b48cff; }
+.device-z { font-size: 9px; }
