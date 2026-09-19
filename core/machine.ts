@@ -75,6 +75,12 @@ interface LibObj {
   /** HTTPClient request state */
   url?: { host: string; port: number; uri: string; args: [string, string][] } | null;
   timeoutMs?: number;
+  /** Ticker: repeating software timer on the ISR lane */
+  tickerUs?: number;
+  tickerFn?: string;
+  tickerTask?: TimerId;
+  /** Servo: the signal pin from attach() */
+  servoPin?: number;
   outBody?: string;
   resp?: HttpResp | null;
   lastError?: number;
@@ -101,7 +107,8 @@ export class Esp8266Machine implements LanHost {
     /** µs timestamp when the link comes up; null = not associated. */
     connectAt: null as number | null,
     objs: new Map<string, {
-      kind: 'WiFiClient' | 'WiFiServer' | 'WiFiUDP' | 'ESP8266WebServer' | 'HTTPClient' | 'IPAddress' | 'Adafruit_NeoPixel';
+      kind: 'WiFiClient' | 'WiFiServer' | 'WiFiUDP' | 'ESP8266WebServer' | 'HTTPClient' | 'IPAddress' | 'Adafruit_NeoPixel'
+        | 'Ticker' | 'Servo';
       port: number;
       peer: string | null;
       listening: boolean;
@@ -476,6 +483,74 @@ export class Esp8266Machine implements LanHost {
         throw new Error(`EEPROM.${meth} is not implemented on the emulated ESP8266`);
     }
   }
+
+/**
+ * Ticker: a repeating software timer. The callback joins the cooperative
+ * ISR lane (same as timer0ISR), so it runs while the loop is in delay().
+ */
+private tickerCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
+  const num = (v: HostValue | undefined): number => (typeof v === 'number' ? v : Number(v ?? 0));
+  const str = (v: HostValue | undefined): string => (typeof v === 'string' ? v : String(v ?? ''));
+  const stop = (): void => {
+    if (obj.tickerTask !== undefined) this.clock.clear(obj.tickerTask);
+    obj.tickerTask = undefined;
+    obj.tickerFn = undefined;
+  };
+  switch (meth) {
+    case 'attach': // attach(seconds) - ESP8266 core Ticker.h
+    case 'attach_s':
+    case 'attach_ms': {
+      const us = meth === 'attach_ms' ? num(args[0]) * 1000 : num(args[0]) * 1_000_000;
+      const fn = str(args[1]);
+      if (!/^[\w]+$/.test(fn)) throw new Error(`Ticker.${meth} handler must be a function, got '${fn}'`);
+      stop();
+      obj.tickerUs = Math.max(100, Math.round(us));
+      obj.tickerFn = fn;
+      obj.tickerTask = this.clock.setInterval(obj.tickerUs, () => {
+        if (this.machinePhase !== 'running') return;
+        this.isrQueue.push(fn);
+        this.scheduleWake(0, true);
+      });
+      return { value: 0 };
+    }
+    case 'detach':
+      stop();
+      return { value: 0 };
+    default:
+      throw new Error(`'Ticker' has no method '${meth}'`);
+  }
+}
+
+/** Servo object: the same SG90 that servoAttach()/servoWrite() drive. */
+private servoCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
+  const num = (v: HostValue | undefined): number => (typeof v === 'number' ? v : Number(v ?? 0));
+  switch (meth) {
+    case 'attach':
+      obj.servoPin = num(args[0]);
+      if (!this.sensorAt('servo', obj.servoPin, 'sig')) obj.servoPin = undefined;
+      return { value: 1 };
+    case 'detach':
+      obj.servoPin = undefined;
+      return { value: 0 };
+    case 'write': {
+      if (obj.servoPin === undefined) return { value: 0 };
+      this.servos.set(obj.servoPin, Math.max(0, Math.min(180, num(args[0]))));
+      return { value: 0 };
+    }
+    case 'writeMicroseconds': {
+      if (obj.servoPin === undefined) return { value: 0 };
+      const us = Math.max(500, Math.min(2400, num(args[0])));
+      this.servos.set(obj.servoPin, ((us - 500) / 1900) * 180);
+      return { value: 0 };
+    }
+    case 'read':
+      return { value: obj.servoPin === undefined ? 0 : this.servos.get(obj.servoPin) ?? 0 };
+    case 'attached':
+      return { value: obj.servoPin === undefined ? 0 : 1 };
+    default:
+      throw new Error(`'Servo' has no method '${meth}'`);
+  }
+}
 
 private npCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
   const num = (v: HostValue | undefined): number => (typeof v === 'number' ? v : Number(v ?? 0));
@@ -1246,6 +1321,9 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
             return { suspend: { kind: 'delay', us: Math.max(0, num(args[0])) } };
           case 'yield':
             return { suspend: { kind: 'delay', us: 0 } };
+          case 'noInterrupts': // cooperative model: ISRs only run at yield
+          case 'interrupts':   // points, so enabling/disabling is a no-op
+            return { value: 0 };
 
           case 'map': {
             const [v, ls, le, ts, te] = args.map((x) => num(x));
@@ -1474,6 +1552,8 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
             if (obj) {
               const meth = name.slice(dot + 1);
               if (obj.kind === 'Adafruit_NeoPixel') return this.npCall(obj, meth, args);
+              if (obj.kind === 'Ticker') return this.tickerCall(obj, meth, args);
+              if (obj.kind === 'Servo') return this.servoCall(obj, meth, args);
               if (obj.kind === 'IPAddress') return this.ipCall(obj, meth, args);
               if (obj.kind === 'ESP8266WebServer') return this.webCall(obj, meth, args);
               if (obj.kind === 'HTTPClient') return this.httpCall(obj, meth, args);

@@ -82,6 +82,8 @@ const TYPE_WORDS = new Set([
   'ESP8266WebServer', 'HTTPClient', 'IPAddress', 'Adafruit_NeoPixel',
   // WiFi mock object types (P3.3) - declarations only, see machine.wifiCall
   'WiFiClient', 'WiFiServer', 'WiFiUDP',
+  // software timers / servo drivers: Ticker t; t.attach(0.5, fn); Servo s;
+  'Ticker', 'Servo',
 ]);
 
 const REJECTED_KW: Record<string, string> = {
@@ -154,7 +156,8 @@ class Parser {
         throw new SyntaxError(`expected identifier but found '${nameTok.value}' (line ${nameTok.line})`);
       }
       if (this.isPunct('(') && this.looksLikeParamList()) {
-        globals.push(this.parseFuncDefRest(type, nameTok.value, line));
+        const f = this.parseFuncDefRest(type, nameTok.value, line);
+        if (f) globals.push(f); // `void f();` prototypes declare, they define nothing
       } else {
         globals.push(this.parseDeclRest(type, nameTok.value, isConst, isStatic, line));
       }
@@ -241,10 +244,14 @@ class Parser {
     return { kind: 'Switch', disc, cases, line };
   }
 
-  private parseFuncDefRest(returnType: string, name: string, line: number): FuncDef {
+  private parseFuncDefRest(returnType: string, name: string, line: number): FuncDef | null {
     this.eatPunct('(');
     const params = this.parseParamList();
     this.eatPunct(')');
+    if (this.isPunct(';')) {
+      this.next(); // prototype: `void header();` - the definition follows later
+      return null;
+    }
     const body = this.parseBlock();
     return { kind: 'FuncDef', returnType, name, params, body, line };
   }
@@ -416,6 +423,21 @@ class Parser {
     const t = this.peek();
     if (t.type === 'eof') {
       throw new SyntaxError('unexpected end of input in statement');
+    }
+    if (t.type === 'punct' && t.value === ';') {
+      this.next();
+      return { kind: 'Block', body: [], line: t.line }; // empty statement
+    }
+    // prototypes inside a function: `void ICACHE_RAM_ATTR foo();` - skip them
+    if (t.type === 'ident' && t.value === 'void') {
+      let k = 1;
+      while (this.peek(k).type === 'ident' && this.peek(k).value !== 'void') k++;
+      if (
+        this.isPunct('(', k) && this.isPunct(')', k + 1) && this.isPunct(';', k + 2)
+      ) {
+        for (let i = 0; i < k + 3; i++) this.next();
+        return { kind: 'Block', body: [], line: t.line };
+      }
     }
     if (t.type === 'ident' && t.value in REJECTED_KW && REJECTED_KW[t.value]) {
       throw new SyntaxError(`${REJECTED_KW[t.value]} (line ${t.line})`);

@@ -272,7 +272,7 @@ export class Interpreter {
   }
   private static readonly OBJECT_TYPES = new Set([
     'WiFiClient', 'WiFiServer', 'WiFiUDP',
-    'ESP8266WebServer', 'HTTPClient', 'IPAddress', 'Adafruit_NeoPixel',
+    'ESP8266WebServer', 'HTTPClient', 'IPAddress', 'Adafruit_NeoPixel', 'Ticker', 'Servo',
   ]);
 
   private globalInit(d: Declarator, g: VarDecl): Val {
