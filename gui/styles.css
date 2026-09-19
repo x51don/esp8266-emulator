@@ -301,6 +301,17 @@ body {
   text-transform: none;
 }
 
+/* ---- sketch panel .ino file buttons (F13) ---- */
+.sketch-file-btns {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+label.mini-btn {
+  cursor: pointer;
+}
+
 /* ---- palette groups ---- */
 .palette-group-title {
   color: var(--dim);

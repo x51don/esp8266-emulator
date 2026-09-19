@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Esp8266Machine, type SerialLine } from '../core/machine';
 import { listBoards } from '../core/boards';
 import { Schematic } from './canvas/schematic';
+import { downloadText, inoFileName } from './fileio';
 import { routeWire } from './canvas/routes';
 import { Palette } from './components/Palette';
 import { SchematicCanvas, confirmOr, type CanvasHandles } from './components/SchematicCanvas';
@@ -405,6 +406,24 @@ export function App() {
     window.setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }, [store, currentProject]);
 
+  // F13: the sketch alone travels as a plain .ino file (active device only)
+  const onSketchSave = useCallback(() => {
+    const dev = devices.find((d) => d.id === activeId);
+    downloadText(inoFileName(dev?.name ?? 'sketch'), sketch);
+  }, [devices, activeId, sketch]);
+
+  const onSketchOpen = useCallback((file: File) => {
+    file.text().then((text) => {
+      if (!text.trim()) {
+        setError('That .ino file is empty.');
+        return;
+      }
+      if (!confirmOr(`Open "${file.name}"? It replaces the sketch on the active device.`)) return;
+      sketchesRef.current.set(activeRef.current, text);
+      setSketch(text);
+    });
+  }, []);
+
   const onImportFile = useCallback((file: File) => {
     file.text().then(
       (text) => {
@@ -487,6 +506,7 @@ export function App() {
         return canvasApi.current?.viewport;
       },
       setSketch,
+      sketch: () => sketchesRef.current.get(activeRef.current) ?? '',
       // the bench from state; a device gets its machine at first activation
       devices: () =>
         devicesState.current.map((d) => {
@@ -586,7 +606,31 @@ export function App() {
         />
         <div className="right-col">
           <div className="editor-panel">
-            <div className="panel-title">sketch.ino</div>
+            <div className="panel-title sketch-title">
+              <span>sketch.ino</span>
+              <span className="sketch-file-btns">
+                <button
+                  className="mini-btn"
+                  onClick={onSketchSave}
+                  title="download the sketch as a .ino file"
+                >
+                  ⤓ .ino
+                </button>
+                <label className="mini-btn" title="open a .ino file (replaces this sketch)">
+                  ⤒ .ino
+                  <input
+                    type="file"
+                    accept=".ino,.txt,text/plain"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) onSketchOpen(f);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              </span>
+            </div>
             <CodeEditor
               value={sketch}
               onChange={(v) => {
