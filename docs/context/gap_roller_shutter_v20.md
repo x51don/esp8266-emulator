@@ -141,3 +141,14 @@ Szczegóły: `milestone_15_mdns.md`.
 
 `configTime`/`time`/`localTime` + TimeLib; epoka = zegar sciankowy +
 czas wirtualny. Szczegoly: `milestone_16_time.md`.
+
+## F10 - wiele urzadzen w GUI + WiFi.config (ZROBIONE)
+
+`lanFetch` (panel HTTP trafia w kazdy host LAN), pasek chipow urzadzen
+w App, szkic/EEPROM/serial per urzadzenie, `WiFi.config(IPAddress)`
+przenosi IP maszyny wraz z nazwami mDNS, `WiFi.localIP()` po leasingu
+stalem odpowiada od razu. Milestone 18, E2E verify8 ALL OK.
+
+Pozostalo z listy "co brakuje": `WiFi.onEvent` (brak stacji w
+emulatorze - bez uzasadnienia), WiFiEvent_t (j.w.), HTTPS/WebSocket
+(poza zasiegiem).

@@ -537,3 +537,31 @@ body {
   max-height: 180px;
   overflow-y: auto;
 }
+
+/* F10: device chips (one ESP8266 machine per chip) */
+.device-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 10px;
+  background: #14161a;
+  border-bottom: 1px solid #2a2e35;
+}
+.device-chip {
+  font: 11px/1.4 ui-monospace, monospace;
+  color: #9aa4b2;
+  background: #1d2025;
+  border: 1px solid #2f343c;
+  border-radius: 10px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.device-chip:hover { border-color: #4a81ff; }
+.device-chip.active {
+  color: #e8ecf2;
+  background: #263a5e;
+  border-color: #4a81ff;
+}
+.device-ip { color: #6fd08c; }
+.device-add { color: #6fd08c; }
+.device-del { color: #e06c75; }

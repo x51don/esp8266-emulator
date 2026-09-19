@@ -96,3 +96,44 @@ describe('mDNS names (F7)', () => {
     expect(m.faultReason).toBe(null);
   });
 });
+
+import { lanFetch, lan as lanSingleton } from '../core/lan';
+
+describe('lanFetch (GUI side, F10)', () => {
+  it('serves a peer machine that is not the caller', () => {
+    const b = boot(SERVER_SKETCH, '192.168.1.200');
+    const resp = lanFetch(lanSingleton.route('192.168.1.200'), 'GET', 'http://192.168.1.200/LED');
+    expect(resp?.status).toBe(200);
+    expect(resp?.body).toBe('ok');
+    // by name too, and an unreachable host yields null
+    expect(lanFetch(lanSingleton.routeHost('pokoj.local'), 'GET', 'http://pokoj.local/LED')?.body).toBe('ok');
+    expect(lanFetch(lanSingleton.route('192.168.1.201'), 'GET', 'http://192.168.1.201/LED')).toBe(null);
+    expect(b.faultReason).toBe(null);
+  });
+});
+
+describe('WiFi.config static lease (F10)', () => {
+  const CONFIG_SKETCH = `
+IPAddress wemos_ip(192, 168, 1, 77);
+ESP8266WebServer server(80);
+void setup() {
+  Serial.begin(9600);
+  WiFi.config(wemos_ip, IPAddress(192, 168, 1, 1), IPAddress(255, 255, 255, 0));
+  WiFi.begin("ssid", "pass");
+  MDNS.begin("ustawione");
+  server.on("/LED", []() { server.send(200, "text/plain", WiFi.localIP()); });
+  server.begin();
+}
+void loop() { server.handleClient(); delay(10); }
+`;
+  it('moves the machine to the configured address, names included', () => {
+    const m = boot(CONFIG_SKETCH, '192.168.1.210');
+    m.advance(1600); // join latency so WiFi.localIP() is the static one
+    expect(m.ip).toBe('192.168.1.77');
+    const r = lanFetch(lanSingleton.routeHost('ustawione.local'), 'GET', 'http://ustawione.local/LED');
+    expect(r?.body).toBe('192.168.1.77');
+    expect(lanSingleton.route('192.168.1.210')).toBe(null); // old lease released
+    m.dispose();
+    machines = machines.filter((x) => x !== m);
+  });
+});

@@ -12,6 +12,7 @@ import { HttpPanel } from './components/HttpPanel';
 import { Toolbar } from './components/Toolbar';
 import { EXAMPLE_NAMES, EXAMPLE_SKETCHES, loadExample } from './examples';
 import { eepromFromB64, eepromToB64, ProjectStore, type ProjectData } from './projects';
+import { lan, lanFetch } from '../core/lan';
 
 export const NEW_SKETCH_TEMPLATE = `// New project - ESP8266 (Wemos D1 mini / NodeMCU).
 // Build a circuit, wire it to a pin and drive it from here.
@@ -32,6 +33,19 @@ const LS = {
   schematic: 'esp8266-emu.schematic',
   board: 'esp8266-emu.board',
 };
+
+/** F10: every device is one Esp8266Machine on the shared virtual LAN. */
+interface Device {
+  id: number;
+  name: string;
+  ip: string;
+}
+let deviceSeq = 0;
+const makeDevice = (): Device => ({
+  id: ++deviceSeq,
+  name: `esp-${deviceSeq}`,
+  ip: `192.168.1.${41 + deviceSeq}`,
+});
 
 function loadSchematic(): Schematic {
   try {
@@ -73,41 +87,116 @@ export function App() {
   const [docEpoch, setDocEpoch] = useState(0); // bumps when a whole doc is swapped in
   const store = useMemo(() => new ProjectStore(localStorage), []);
   const [projects, setProjects] = useState<string[]>(() => store.list());
-  const [machine, setMachine] = useState(() => new Esp8266Machine({ board: boardId }));
+  const [machine, setMachine] = useState(() => new Esp8266Machine({ board: boardId, ip: '192.168.1.42' }));
   const canvasApi = useRef<CanvasHandles | null>(null);
   const [bottomTab, setBottomTab] = useState<'serial' | 'http'>('serial');
   /** F6: EEPROM contents to plant into the next machine (project load) */
   const pendingEeprom = useRef<Uint8Array | null>(null);
+  // ---- F10: devices (each one machine on the LAN, own sketch) ----
+  const [devices, setDevices] = useState<Device[]>(() => [makeDevice()]);
+  const [activeId, setActiveId] = useState(1);
+  const activeRef = useRef(1);
+  const machinesRef = useRef(new Map<number, Esp8266Machine>());
+  const machineBoard = useRef(new Map<number, string>());
+  const sketchesRef = useRef(new Map<number, string>());
+  const sketchRef = useRef(sketch);
+  sketchRef.current = sketch;
 
-  // ---- machine lifecycle: one machine per board (and per doc swap) ----
+  // adopt the placeholder machine as device #1 (declared BEFORE the sync
+  // effect so it runs first on mount; its sketch is the restored editor text)
   useEffect(() => {
-    const m = new Esp8266Machine({ board: boardId });
-    // project load wins; otherwise flash survives a board switch like on hardware
-    m.eepromRestore(pendingEeprom.current ?? machineRef.current?.eepromBytes() ?? new Uint8Array(0));
-    pendingEeprom.current = null;
-    const offSerial = m.onSerial((line) => setSerialLines((prev) => (prev.length > 600 ? [...prev.slice(-500), line] : [...prev, line])));
-    // a runtime error faults the machine mid-run; surface it and leave play mode
-    const offFault = m.onFault((reason) => {
-      setError(reason);
-      setRunning(false);
-    });
+    machinesRef.current.set(1, machineRef.current);
+    machineBoard.current.set(1, boardId);
+    sketchesRef.current.set(1, sketchRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ---- machine lifecycle: one machine per device; the active one drives
+  // the editor, canvas, serial and HTTP panel; doc swaps dispose them all ----
+  useEffect(() => {
+    const dev = devices.find((d) => d.id === activeId) ?? devices[0];
+    activeRef.current = dev.id;
+    let m = machinesRef.current.get(dev.id);
+    if (m && machineBoard.current.get(dev.id) !== boardId) {
+      // board swap: the flash survives like on the real PCB
+      const seed = pendingEeprom.current ?? m.eepromBytes();
+      m.dispose();
+      machinesRef.current.delete(dev.id);
+      pendingEeprom.current = seed;
+      m = undefined;
+    }
+    if (!m) {
+      m = new Esp8266Machine({ board: boardId, ip: dev.ip });
+      // project load wins; a fresh device starts from an erased chip
+      m.eepromRestore(pendingEeprom.current ?? new Uint8Array(0));
+      pendingEeprom.current = null;
+      machineBoard.current.set(dev.id, boardId);
+      m.onSerial((line) => {
+        if (activeRef.current === dev.id)
+          setSerialLines((prev) => (prev.length > 600 ? [...prev.slice(-500), line] : [...prev, line]));
+      });
+      m.onFault((reason) => {
+        setError(reason);
+        if (activeRef.current === dev.id) setRunning(false);
+      });
+      machinesRef.current.set(dev.id, m);
+    }
     // keep the board component in the document in sync with the toolbar
     // (mutator, not a direct param write: geometry caches must be invalidated)
     if (schematic.boardComponent()) schematic.setBoard(boardId);
     schematic.syncNetlist(m.netlist);
     setMachine(m);
     setRunning(false);
-    setSerialLines([]);
+    setSerialLines(m.serial); // each device keeps its own boot log
     try {
       localStorage.setItem(LS.board, boardId);
     } catch {
       /* quota: the id is only a convenience, not worth a banner */
     }
-    return () => {
-      offFault();
-      offSerial();
-    };
-  }, [boardId, schematic, docEpoch]);
+  }, [boardId, schematic, docEpoch, devices, activeId]);
+
+  const switchDevice = useCallback(
+    (id: number) => {
+      if (id === activeRef.current) return;
+      sketchesRef.current.set(activeRef.current, sketchRef.current);
+      setActiveId(id);
+      activeRef.current = id;
+      setSketch(sketchesRef.current.get(id) ?? NEW_SKETCH_TEMPLATE);
+      setError(null);
+    },
+    [],
+  );
+
+  const onAddDevice = useCallback(() => {
+    sketchesRef.current.set(activeRef.current, sketchRef.current);
+    const dev = makeDevice();
+    sketchesRef.current.set(dev.id, NEW_SKETCH_TEMPLATE);
+    setDevices((ds) => [...ds, dev]);
+    setActiveId(dev.id);
+    activeRef.current = dev.id;
+    setSketch(NEW_SKETCH_TEMPLATE);
+  }, []);
+
+  const onRemoveDevice = useCallback(
+    (id: number) => {
+      if (!window.confirm('Remove this device? Its machine, sketch and flash are dropped.')) return;
+      const m = machinesRef.current.get(id);
+      if (m) {
+        m.dispose();
+        machinesRef.current.delete(id);
+        machineBoard.current.delete(id);
+      }
+      sketchesRef.current.delete(id);
+      const rest = devices.filter((d) => d.id !== id);
+      setDevices(rest.length ? rest : devices);
+      if (id === activeRef.current && rest.length) {
+        setActiveId(rest[0].id);
+        activeRef.current = rest[0].id;
+        setSketch(sketchesRef.current.get(rest[0].id) ?? NEW_SKETCH_TEMPLATE);
+      }
+    },
+    [devices],
+  );
 
   // ---- persistence ----
   const safeStore = useCallback((key: string, value: string) => {
@@ -136,6 +225,15 @@ export function App() {
   const applyDoc = useCallback((next: Schematic, nextSketch?: string) => {
     safeStore(LS.schematic, next.toJSON());
     if (nextSketch !== undefined) safeStore(LS.sketch, nextSketch);
+    // a whole-doc swap retires every device; the project owns one primary
+    for (const m of machinesRef.current.values()) m.dispose();
+    machinesRef.current.clear();
+    machineBoard.current.clear();
+    sketchesRef.current.clear();
+    deviceSeq = 0;
+    setDevices([makeDevice()]);
+    setActiveId(1);
+    activeRef.current = 1;
     setSchematic(next);
     if (nextSketch !== undefined) setSketch(nextSketch);
     setDocEpoch((e) => e + 1);
@@ -254,6 +352,7 @@ export function App() {
   // ---- transport ----
   const onRun = useCallback(() => {
     try {
+      sketchesRef.current.set(activeRef.current, sketch);
       machine.load(sketch);
       safeStore(LS.sketch, sketch);
       schematic.syncNetlist(machine.netlist);
@@ -303,6 +402,12 @@ export function App() {
         return canvasApi.current?.viewport;
       },
       setSketch,
+      devices: () => [...machinesRef.current.keys()].map((id) => {
+        const m = machinesRef.current.get(id)!;
+        return { id, ip: m.ip, phase: m.phase() };
+      }),
+      addDevice: onAddDevice,
+      switchDevice,
       routeWire,
       /** Routed world polyline of a wire (same computation the canvas does). */
       wirePath: (id: string) => schematic.wireRoutes().get(id) ?? null,
@@ -313,7 +418,7 @@ export function App() {
     return () => {
       delete (window as unknown as Record<string, unknown>).__emu;
     };
-  }, [schematic, applyDoc, boardId]);
+  }, [schematic, applyDoc, boardId, onAddDevice, switchDevice]);
   const machineRef = useRef(machine);
   machineRef.current = machine;
 
@@ -347,6 +452,33 @@ export function App() {
         error={error}
         fault={fault}
       />
+      <div className="device-bar">
+        {devices.map((d) => (
+          <button
+            key={d.id}
+            className={`device-chip${d.id === activeId ? ' active' : ''}`}
+            onClick={() => switchDevice(d.id)}
+            title={`virtual IP ${d.ip}`}
+          >
+            {d.name}{' '}
+            <span className="device-ip">
+              .{(machinesRef.current.get(d.id)?.ip ?? d.ip).split('.').pop()}
+            </span>
+          </button>
+        ))}
+        <button className="device-chip device-add" onClick={onAddDevice} title="Add another ESP8266 to the LAN">
+          +
+        </button>
+        {devices.length > 1 && (
+          <button
+            className="device-chip device-del"
+            onClick={() => onRemoveDevice(activeId)}
+            title="Remove the active device"
+          >
+            &times;
+          </button>
+        )}
+      </div>
       <div className="main">
         <Palette />
         <SchematicCanvas
@@ -363,7 +495,13 @@ export function App() {
         <div className="right-col">
           <div className="editor-panel">
             <div className="panel-title">sketch.ino</div>
-            <CodeEditor value={sketch} onChange={setSketch} />
+            <CodeEditor
+              value={sketch}
+              onChange={(v) => {
+                sketchesRef.current.set(activeRef.current, v);
+                setSketch(v);
+              }}
+            />
           </div>
           <div className="dock-tabs">
             <button
@@ -385,7 +523,13 @@ export function App() {
             <HttpPanel
               ip={machine.ip}
               running={running}
-              onFetch={(mth, u, b) => machine.fetchHttp(mth, u, b)}
+              onFetch={(mth, u, b) => {
+                // F10: any host on the virtual LAN answers, not just this chip
+                const host = /^https?:\/\/([^/:?#]+)/i.exec(u.trim())?.[1] ?? '';
+                const target = lan.routeHost(host);
+                if (!target || target === machineRef.current) return machine.fetchHttp(mth, u, b);
+                return lanFetch(target, mth, u, b);
+              }}
             />
           )}
         </div>

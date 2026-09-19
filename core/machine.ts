@@ -149,8 +149,15 @@ export class Esp8266Machine implements LanHost {
   /** -1 = unlimited; otherwise remaining interpreter yields for this advance. */
   private yieldBudget = -1;
 
-  /** F5: LAN identity; two machines on one page need distinct ips. */
-  readonly ip: string;
+  /** F5: LAN identity; two machines on one page need distinct ips.
+   *  F10: mutable - WiFi.config(IPAddress(...)) rewrites it like a DHCP lease. */
+  private _ip = '192.168.1.42';
+  private lanLive = false;
+  /** WiFi.config happened: localIP() answers even before an association */
+  private staticLease = false;
+  get ip(): string {
+    return this._ip;
+  }
   private httpInbox: HttpReq[] = [];
 
   /** LanHost: queue a request for this machine's HTTP server(s). */
@@ -172,7 +179,7 @@ export class Esp8266Machine implements LanHost {
   }
 
   constructor(opts: { board: string; ip?: string }) {
-    this.ip = opts.ip ?? '192.168.1.42';
+    this._ip = opts.ip ?? '192.168.1.42';
     this.boardId = opts.board;
     this.netlist = new Netlist(this.gpio);
     this.registers = new GpioRegisters((mask) => this.sampleIn(mask));
@@ -363,6 +370,22 @@ export class Esp8266Machine implements LanHost {
    * console with a [net->host:port] tag - the "Serial-only dashboard".
    * available()/read() stay empty: outside clients cannot connect here.
    */
+  /** F10: adopt a static IP mid-flight (mDNS names follow the lease) */
+  setLanIp(ip: string): void {
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip) || ip === this._ip) return;
+    const old = this._ip;
+    this.staticLease = true;
+    if (this.lanLive) {
+      lan.unregister(this);
+      for (const n of this.mdnsNames) lan.releaseName(n, old);
+    }
+    this._ip = ip;
+    if (this.lanLive) {
+      lan.register(this);
+      for (const n of this.mdnsNames) lan.registerName(n, ip);
+    }
+  }
+
   /** F8: locked NTP epoch in seconds (virtual-time-corrected), 0 while syncing */
   private ntpEpochSec(): number {
     if (this.ntp.syncAt === null || this.clock.now() < this.ntp.syncAt) return 0;
@@ -544,6 +567,7 @@ private webCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
     case 'begin':
       obj.listening = true;
       lan.register(this);
+      this.lanLive = true;
       return { value: 0 };
     case 'handleClient': {
       const req = this.httpInbox.shift();
@@ -1324,9 +1348,17 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
 
           // ---- P3.3 WiFi mock: globals ----
           case 'WiFi.mode': case 'WiFi.setSleep': case 'WiFi.persistent':
-          case 'WiFi.setHostname': case 'WiFi.softAP':
-          case 'WiFi.config': case 'WiFi.softAPConfig':
+          case 'WiFi.setHostname': case 'WiFi.softAP': case 'WiFi.softAPConfig':
             return { value: 1 };
+          case 'WiFi.config': {
+            // WiFi.config(IPAddress(...)|"1.2.3.4", gw, mask[, dns]) - static lease
+            const a0 = args[0];
+            let ip: string | null = null;
+            if (typeof a0 === 'string' && a0.startsWith('@IPAddress:')) ip = a0.slice(11).replace(/,/g, '.');
+            else if (typeof a0 === 'string' && /^\d+\.\d+\.\d+\.\d+$/.test(a0)) ip = a0;
+            if (ip) this.setLanIp(ip);
+            return { value: 1 };
+          }
           case 'WiFi.isConnected': {
             const c = this.wifi.connectAt;
             return { value: c !== null && this.clock.now() >= c ? 1 : 0 };
@@ -1418,7 +1450,9 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
             return { value: c !== null && this.clock.now() >= c ? 3 /* WL_CONNECTED */ : 6 };
           }
           case 'WiFi.localIP':
-            return { value: this.wifi.connectAt !== null && this.clock.now() >= this.wifi.connectAt ? this.ip : '0.0.0.0' };
+            return { value: this.staticLease
+              || (this.wifi.connectAt !== null && this.clock.now() >= this.wifi.connectAt)
+              ? this.ip : '0.0.0.0' };
           case 'WiFi.softAPIP': return { value: '192.168.4.1' };
           case 'WiFi.macAddress': return { value: '18:fe:20:1c:b4:3a' };
           case 'WiFi.RSSI': return { value: -55 };

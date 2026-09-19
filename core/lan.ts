@@ -104,3 +104,27 @@ export function parseForm(s: string): [string, string][] {
 function canonicalName(name: string): string {
   return name.trim().toLowerCase().replace(/\.local$/, '').replace(/\.$/, '');
 }
+
+/**
+ * Serve `url` against any LAN host on behalf of the GUI (the HTTP panel).
+ * Never call from inside a machine pump - like fetchHttp, this is GUI-context
+ * only: it runs the TARGET's clock while waiting for the answer.
+ */
+export function lanFetch(
+  host: LanHost | null,
+  method: 'GET' | 'POST',
+  url: string,
+  body = '',
+): HttpResp | null {
+  const parts = parseUrl(url);
+  if (!host || !parts) return null;
+  const req: HttpReq = {
+    method,
+    uri: parts.uri,
+    args: [...parts.args, ...(method === 'GET' ? [] : parseForm(body))],
+    body,
+  };
+  host.deliver(req);
+  for (let waited = 0; waited < 2000 && !req.resp; waited++) host.pump(1);
+  return req.resp ?? null;
+}
