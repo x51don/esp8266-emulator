@@ -109,6 +109,8 @@ export class Esp8266Machine {
   private circuitListeners: Array<(r: ResolveResult) => void> = [];
   private faultListeners: Array<(reason: string) => void> = [];
   faultReason: string | null = null;
+  /** ESP.restart() latched; consumed by advance() to reboot from setup(). */
+  private restartRequested = false;
   /** -1 = unlimited; otherwise remaining interpreter yields for this advance. */
   private yieldBudget = -1;
 
@@ -178,6 +180,7 @@ export class Esp8266Machine {
     if (this.source === null) {
       throw new Error('no sketch loaded - call load(source) first');
     }
+    this.restartRequested = false;
     this.halt();
     this.clock.restart();
     this.registers.reset();
@@ -243,6 +246,11 @@ export class Esp8266Machine {
       this.fault(e instanceof Error ? e.message : String(e));
     } finally {
       this.yieldBudget = -1;
+    }
+    if (this.restartRequested) {
+      this.restartRequested = false;
+      this.run(); // a board reset clears the sketch state and serial buffer
+      return;
     }
     this.resolveCircuit();
   }
@@ -421,6 +429,11 @@ export class Esp8266Machine {
         // wake-storm cheap while still handing the sketch ~5k wake-ups per
         // virtual millisecond when the world wants it to run.
         this.scheduleWake(200, isIsr);
+        return;
+      }
+      if (this.restartRequested) {
+        // ESP.restart(): freeze the program; advance() reboots right after
+        this.mainSuspended = true;
         return;
       }
       if (this.yieldBudget > 0) this.yieldBudget -= 1;
@@ -861,10 +874,48 @@ export class Esp8266Machine {
             return { value: text.length };
           }
 
+          // ---- ESP. helpers ----
+          case 'ESP.wdtFeed': case 'ESP.sleep':
+            return { value: 0 };
+          case 'ESP.restart':
+            this.restartRequested = true;
+            return { value: 0 };
+          case 'ESP.getFreeHeap':
+            return { value: 40_000 };
+
+          // ---- inline `IPAddress(192, 168, 1, 60)` construction ----
+          case 'IPAddress':
+            return { value: `@IPAddress:${args.map((a) => num(a)).join(',')}` };
+
           // ---- P3.3 WiFi mock: globals ----
           case 'WiFi.mode': case 'WiFi.setSleep': case 'WiFi.persistent':
           case 'WiFi.setHostname': case 'WiFi.softAP':
+          case 'WiFi.config': case 'WiFi.softAPConfig':
             return { value: 1 };
+          case 'WiFi.isConnected': {
+            const c = this.wifi.connectAt;
+            return { value: c !== null && this.clock.now() >= c ? 1 : 0 };
+          }
+          case 'WiFi.reconnect':
+            this.wifi.connectAt = this.clock.now() + 1_500_000;
+            return { value: 0 }; // WL_DISCONNECTED while the join runs
+          case 'WiFi.waitForConnectResult': {
+            const c = this.wifi.connectAt;
+            if (c === null) return { value: 6 }; // nobody ever began a join
+            const wait = c - this.clock.now();
+            return wait > 0
+              ? { suspend: { kind: 'delay', us: wait }, value: 3 }
+              : { value: 3 };
+          }
+
+          // ---- mDNS + OTA: accepted, not simulated (milestone 12) ----
+          case 'MDNS.begin': case 'MDNS.addService': case 'MDNS.setHostname':
+            return { value: 1 };
+          case 'ArduinoOTA.onStart': case 'ArduinoOTA.onEnd':
+          case 'ArduinoOTA.onProgress': case 'ArduinoOTA.onError':
+          case 'ArduinoOTA.begin': case 'ArduinoOTA.handle':
+          case 'ArduinoOTA.setHostname': case 'ArduinoOTA.setPassword':
+            return { value: 0 };
           case 'WiFi.begin':
             this.wifi.connectAt = this.clock.now() + 1_500_000; // association latency
             return { value: 1 };

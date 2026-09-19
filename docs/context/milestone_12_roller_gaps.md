@@ -82,11 +82,41 @@ Znane ograniczenia: `T x(nazwaZmiennej);` na poziomie globalu może
 zostać wzięte za definicję funkcji bez typu parametru; referencja nie
 działa dla tablic; capture brak.
 
-## F3 - API rdzenia (pending)
+## F3 - API rdzenia (done)
 
-Stałe D0..D8/A0 w env, `String.length()/toInt()`, `String(int)`,
-`ESP.restart()/wdtFeed()`, `WiFi.mode/config/softAPConfig/reconnect/
-isConnected/waitForConnectResult`, stuby MDNS i ArduinoOTA.
+`core/sketch/interp.ts`:
+
+- Metody na wartościach `String` (odbiornik = zmienna szkicu trzymająca
+  `Val 's'`, nie token `@Typ:...`): `length/toInt/toFloat/charAt/equals/
+  equalsIgnoreCase/indexOf/substring/toUpperCase/toLowerCase`. W `Call`
+  sprawdzane przed `env.call`, więc `Serial.*`/`WiFi.*` bez zmian.
+- Inicjalizatory zmiennych lokalnych (nie-static, nie-const, bez tablic)
+  liczone teraz generatorem - `int r = WiFi.waitForConnectResult();`
+  wiesza setup do końca przyłączenia zamiast rzucać.
+
+`core/machine.ts`:
+
+- `ESP.restart()` - zatrzask `restartRequested`; `runGen` zamiera przy
+  najbliższym śleciu, `advance()` robi `run()` (reset jak przycisk RST:
+  czyści serial i stan szkicu - świadome odstępstwo od prawdziwej
+  płytki, gdzie monitor zachowuje log). `ESP.wdtFeed`/`ESP.sleep` -
+  no-op, `ESP.getFreeHeap` - 40000.
+- `WiFi.isConnected/reconnect/waitForConnectResult/config/softAPConfig`
+  + `IPAddress(a,b,c,d)` jako wyrażenie (token `@IPAddress:...`).
+  `waitForConnectResult` zwraca suspend z resztą 1.5 s łączenia i
+  `WL_CONNECTED`; bez rozpoczętego łączenia - `WL_DISCONNECTED`.
+- `MDNS.begin/addService/setHostname` i całe `ArduinoOTA.*` -
+  akceptowane no-opy (bez symulacji sieci/OTA).
+- Stałe `D0..D8`, `A0`, `WIFI_STA/AP` już były - test to potwierdza.
+
+Testy: `tests/api-f3.test.ts` (9): metody String na literale-w-zmiennej,
+parametrze i globalu, `String(int).toInt()`, restart (log nigdy nie
+rośnie ponad boot+tick), wdtFeed, parkowanie setupu, isConnected/
+reconnect, config z IPAddress, blok OTA+lambdy. 386/386, tsc/build OK.
+
+Ograniczenia: methods na surowym literale (`"x".length()`) nie
+parsują się (parser: `ident.metoda()`); `char*`/String metody mutujące
+(`trim`, `replace`) bez implementacji (brak semantyki mutacji).
 
 ## F4 - NeoPixel obiektowo + IPAddress (pending)
 

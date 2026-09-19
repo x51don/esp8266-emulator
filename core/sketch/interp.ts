@@ -148,6 +148,26 @@ type Ctrl =
 const NORMAL: Ctrl = { type: 'normal' };
 
 /** copy-out binding for a byRef parameter (caller-side lvalue store) */
+/** Arduino String class methods on emulator 's' values. */
+function strMethod(s: string, meth: string, args: Val[], line: number): Val {
+  switch (meth) {
+    case 'length': return numVal(s.length, true);
+    case 'toInt': return numVal(parseInt(s, 10) | 0, true);
+    case 'toFloat': return numVal(parseFloat(s) || 0, false);
+    case 'charAt': return numVal(s.charCodeAt(asInt(args[0], line)) || 0, true);
+    case 'equals': return numVal(s === strOf(args[0]) ? 1 : 0, true);
+    case 'equalsIgnoreCase':
+      return numVal(s.toLowerCase() === strOf(args[0]).toLowerCase() ? 1 : 0, true);
+    case 'indexOf': return numVal(s.indexOf(strOf(args[0])), true);
+    case 'substring':
+      return { k: 's', v: s.substring(asInt(args[0], line), args[1] ? asInt(args[1], line) : undefined) };
+    case 'toUpperCase': return { k: 's', v: s.toUpperCase() };
+    case 'toLowerCase': return { k: 's', v: s.toLowerCase() };
+    default:
+      throw new SketchRuntimeError(`String has no method '${meth}'`, line);
+  }
+}
+
 interface RefOut {
   param: string;
   store: (v: Val) => void;
@@ -429,7 +449,14 @@ export class Interpreter {
         for (const d of stmt.decls) {
           // bindStatics may have pre-bound this name already.
           if (scope.vars.has(d.name)) continue;
-          const v = this.localInit(d, stmt, scope);
+          let v: Val;
+          if (!stmt.isStatic && !stmt.isConst && d.init && d.arraySize === null && d.init.kind !== 'ArrayLit') {
+            // a plain initializer may suspend (int r = WiFi.waitForConnectResult();)
+            v = dup(yield* this.eval(d.init, scope));
+            if (typeIsString(stmt.type) && v.k === 'n') v = { k: 's', v: strOf(v) };
+          } else {
+            v = this.localInit(d, stmt, scope);
+          }
           if (stmt.isConst) v.const = true;
           scope.vars.set(d.name, v);
         }
@@ -692,7 +719,16 @@ export class Interpreter {
           // emulate a return value by running it and capturing via closure.
           return yield* this.callUserExpr(fn, args, e.line, refs);
         }
-        const res = this.env.call(e.callee, args.map(toHost));
+        // methods on String values (`v.length()`, `v.toInt()`, ...): the
+        // receiver is a sketch variable holding an 's' Val, not a host object
+        if (!this.funcs.has(callee) && callee.includes('.')) {
+          const dot = callee.indexOf('.');
+          const recv = lookupIn(scope, callee.slice(0, dot));
+          if (recv && recv.k === 's' && !recv.v.startsWith('@')) {
+            return strMethod(recv.v, callee.slice(dot + 1), args, e.line);
+          }
+        }
+        const res = this.env.call(callee, args.map(toHost));
         if (res.suspend) {
           yield res.suspend;
         }
