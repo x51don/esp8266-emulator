@@ -340,6 +340,7 @@ function drawComponent(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedC
   else if (c.type === 'resistor') drawResistor(ctx, s, c, body);
   else if (c.type === 'button') drawButton(ctx, s, c, body);
   else if (c.type === 'buzzer') drawBox(ctx, s, body, 'BUZZ', '#4a3a5a');
+  else if (c.type === 'motor') drawMotor(ctx, s, c, body);
   else if (c.type === 'battery') drawBox(ctx, s, body, `${c.params.volts ?? 9}V`, '#405066');
   else if (c.type === 'pot') drawPot(ctx, s, c, body);
   else if (c.type === 'cap') drawCap(ctx, s, c, body);
@@ -509,6 +510,29 @@ function drawServo(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedCompo
   ctx.lineTo(cx + Math.cos(a) * b.w * 0.3, cy - Math.sin(a) * b.h * 0.3);
   ctx.stroke();
   ctx.lineWidth = 1;
+}
+
+/** F3.1: DC motor - rpm/direction readout and a shaft that turns while running. */
+function drawMotor(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent, body: { x: number; y: number; w: number; h: number }): void {
+  const b = chipBox(ctx, s, body, '#233a33');
+  const m = s.circuit?.motors.get(c.id);
+  const on = !!m?.spinning;
+  chipText(ctx, b, 'DC MOTOR',
+    on ? `${m!.rpm} rpm ${m!.dir > 0 ? 'CW' : 'CCW'}` : 'idle',
+    on ? C.wireHot : C.text);
+  if (!on || !m) return;
+  const cx = b.x + b.w * 0.5;
+  const cy = b.y + b.h * 0.72;
+  const r = Math.min(b.w, b.h) * 0.2;
+  const a = ((performance.now() / 1000) * (m.rpm / 60) * Math.PI * 2) * m.dir;
+  ctx.strokeStyle = C.wireHot;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+  ctx.stroke();
 }
 
 function drawRelay(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedComponent, body: { x: number; y: number; w: number; h: number }): void {

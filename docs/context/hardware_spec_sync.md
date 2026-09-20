@@ -387,6 +387,24 @@ Testy: tests/wifi-ap.test.ts (6).
 
 ---
 
+# F3.1 Silnik DC w outputs (życzenie użytkownika 2026-09-19)
+
+**Model.** Typ `motor`, piny `+`/`-` (footprint jak buzzer). Obciążenie
+dwukierunkowe: para source/sink wg konwencji netlisty (1,65 V); większa z
+dwóch możliwych różnic potencjałów wygrywa -> kierunek. Uzwojenie =
+`rOhms` (domyślnie 50 R), spadek szczotek 0,3 V, rozruch od 0,6 V skutecznych.
+`rpm = rpmPerV (2000) * (V_skuteczne - 0,3)`; duty PWM skaluje prąd i obroty
+(jak jasność LED). Brak siły przeciwelektromotorycznej w czasie - prąd to
+prąd zwarciowy uzwojenia (najgorszy, grzewczo uczciwy; odstępstwo
+odnotowane). Stan w `ResolveResult.motors` {spinning, dir, rpm, currentMa};
+prąd księgowany do budżetu F1.2 na obu końcach -> silnik prosto na pinie
+(60 mA) to fault overcurrent, tak jak cewka przekaźnika. MOSFET/5V:
+(5-0,3)/(50+10) = 78 mA, bramka czysta. GUI: paleta Outputs, symbol z
+obrotowym wałem i odczytem rpm/CW/CCW, dialog: rOhms + rpmPerV.
+Testy: tests/motor.test.ts (7).
+
+---
+
 # Dziennik zmian implementacji
 
 (format: data | komponent | test red -> zielony | uwagi)
@@ -400,4 +418,5 @@ Testy: tests/wifi-ap.test.ts (6).
 - 2026-09-19 | F2.3 watchdogi SW+HW 6.3 s + reset reason | tests/wdt.test.ts 5x red -> green; suite 526/526 | deadline-model (karmienie bez clock ops; clear+setTimeout na iterację = kwadratowy czas ścian); banner "wdt reset" tylko przy tripie; wyjątek głodzenia budżetu dla jawnego wdtFeed.
 - 2026-09-19 | F2.4 ADC: dzielnik boarda + krzywa chipa 0-1V | tests/adc.test.ts 5x red -> green; suite 534/534 | Board.adc (230k/100k, fs 1.0V [DS~]); knee 0.25V kwadratowo, ciągłe w 256; dzielnik 1/3.3 = stara skala w zakresie liniowym, różnica tylko w paśmie martwym.
 - 2026-09-19 | F2.5 timer0 zarezerwowany + timer1 23-bit | tests/timers.test.ts 5x red -> green; suite 540/540 | enable(0) z aktywnym radiem = 0 + ostrzeżenie serial; disconnect() oddaje timer0; clamp 0x7FFFFF*3.2us; lanLive (server.begin) też liczy się jako radio.
+- 2026-09-19 | F3.1 motor DC w outputs | tests/motor.test.ts 7x red -> green; suite 553/553 | dwukierunkowe obciazenie 50R + szczotki 0,3V; księgowanie prądu do F1.2; GUI: paleta/symbol/dialog.
 - 2026-09-19 | F2.6 stany radia STA/AP | tests/wifi-ap.test.ts 6x red -> green; suite 546/546; roleta-v20 wymusiła korektę | getMode/mode maska; softAP 300 ms; WL_CONNECTED z AP tylko w trybie czystym AP (AP_STA = rdzeń, roleta wait-for-join); softAPIP 0.0.0.0 gdy AP leży; LAN bez bramy radia (kontrakt web-f5).

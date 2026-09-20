@@ -37,6 +37,10 @@ const FIELDS: Record<string, Field[]> = {
   battery: [{ key: 'volts', label: 'Voltage', unit: 'V', kind: 'num', step: 0.5 }],
   cap: [{ key: 'uf', label: 'Capacitance', unit: 'uF', kind: 'num', step: 10 }],
   buzzer: [],
+  motor: [
+    { key: 'rOhms', label: 'Winding resistance', unit: '\u03a9', kind: 'num', step: 5 },
+    { key: 'rpmPerV', label: 'Speed constant', unit: 'rpm/V', kind: 'num', step: 100 },
+  ],
   button: [{ key: 'bounce', label: 'Contact bounce window', unit: 'ms', kind: 'num', step: 0.5 }],
   pot: [{ key: 'ratio', label: 'Wiper position', unit: '0..1', kind: 'num', step: 0.01 }],
   ldr: [{ key: 'lux', label: 'Light level', unit: 'lx', kind: 'num', step: 10 }],

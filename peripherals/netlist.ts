@@ -43,6 +43,16 @@ export interface LedState {
   brightness: number; // 0..1, duty-averaged
 }
 
+/** F3.1: a brushed DC motor - a bidirectional load with a resistive winding. */
+export interface MotorState {
+  spinning: boolean;
+  /** +1: current enters at '+', -1: reversed leads, 0: at rest */
+  dir: -1 | 0 | 1;
+  /** average shaft speed at the applied duty */
+  rpm: number;
+  currentMa: number;
+}
+
 export interface Fault {
   kind: 'short' | 'contention' | 'overcurrent' | 'warn';
   message: string;
@@ -59,6 +69,8 @@ export interface SemiState {
 
 export interface ResolveResult {
   leds: Map<string, LedState>;
+  /** F3.1: DC motor states */
+  motors: Map<string, MotorState>;
   /** diode / zener / transistor states (F15) */
   semis: Map<string, SemiState>;
   /** logic level every MCU signal pin sees (what digitalRead() will return) */
@@ -83,6 +95,9 @@ const VF_BY_COLOR: Record<string, number> = {
   red: 1.8, orange: 1.9, yellow: 2.0, green: 2.1, amber: 2.0,
   blue: 3.0, white: 3.1, rgb: 2.0, ir: 1.4,
 };
+/** F3.1: carbon-brush drop and the torque-to-start voltage of a toy motor. */
+const MOTOR_BRUSH_V = 0.3;
+const MOTOR_START_V = 0.6;
 const ON_MA = 0.05;
 const BURN_MA = 50;
 /** Series resistance of a conducting diode / saturated transistor link. */
@@ -418,7 +433,7 @@ export class Netlist {
       if ((dist.get(t) ?? Infinity) < r) continue;
       const dot = t.lastIndexOf('.');
       const comp = this.comps.get(t.slice(0, dot));
-      if (comp && (comp.type === 'led' || comp.type === 'buzzer') && t !== from && !through.has(t)) {
+      if (comp && (comp.type === 'led' || comp.type === 'buzzer' || comp.type === 'motor') && t !== from && !through.has(t)) {
         // Endpoints are searched TO, never through - but entering at the
         // ANODE is the forward direction, so the cathode net stays visible
         // (lets a series diode / Zener feed a load behind it; the ~2 V drop
@@ -466,6 +481,16 @@ export class Netlist {
     if (!list.length) return null;
     list.sort((a, b) => b.src.v - a.src.v || a.r - b.r);
     return list[0];
+  }
+
+  /** Motor drive pair: a >1.65 V source at hiT and a sink at loT. */
+  private motorPair(hiT: string, loT: string) {
+    const src = this.bestSource(hiT);
+    const snk = this.bestSink(loT);
+    if (!src || !snk) return null;
+    const v = src.src.v - snk.src.v;
+    if (v <= 0.05) return null;
+    return { src, snk, v, duty: Math.min(src.src.duty, snk.src.duty) };
   }
 
   /** GPIO number when a terminal is an MCU signal pin (rails give null). */
@@ -526,6 +551,38 @@ export class Netlist {
         this.attribute(pinCurrent, snk.at, state.currentMa);
       }
       leds.set(c.id, state);
+    }
+
+    // --- F3.1: DC motors: the bigger of the two possible current directions
+    // wins (an H-bridge reverse is just the other pair lighting up) ---
+    const motors = new Map<string, MotorState>();
+    for (const c of this.comps.values()) {
+      if (c.type !== 'motor') continue;
+      const rW = Number(c.params.rOhms ?? 50);
+      const kv = Number(c.params.rpmPerV ?? 2000);
+      const fwd = this.motorPair(term(c.id, '+'), term(c.id, '-'));
+      const rev = this.motorPair(term(c.id, '-'), term(c.id, '+'));
+      let pair = fwd;
+      let dir: -1 | 0 | 1 = 1;
+      if (!fwd && rev) { pair = rev; dir = -1; }
+      else if (fwd && rev && rev.v > fwd.v) { pair = rev; dir = -1; }
+      let state: MotorState = { spinning: false, dir: 0, rpm: 0, currentMa: 0 };
+      if (pair) {
+        const rTotal = pair.src.r + pair.snk.r + rW;
+        const duty = pair.duty;
+        const effV = pair.v * duty;
+        const spinning = effV >= MOTOR_START_V;
+        state = {
+          spinning,
+          dir: spinning ? dir : 0,
+          rpm: spinning ? Math.round(Math.max(0, kv * (effV - MOTOR_BRUSH_V))) : 0,
+          currentMa: (Math.max(0, pair.v - MOTOR_BRUSH_V) / rTotal) * 1000 * duty,
+        };
+        // F1.2 budget: the winding current flows through whatever drives it
+        this.attribute(pinCurrent, pair.src.at, state.currentMa);
+        this.attribute(pinCurrent, pair.snk.at, state.currentMa);
+      }
+      motors.set(c.id, state);
     }
 
     // --- semiconductor states (F15) ---
@@ -683,7 +740,7 @@ export class Netlist {
       });
     }
 
-    return { leds, semis, pinLevels, externals, pinCurrent, overvoltPins, faults, netOf, netVoltage };
+    return { leds, motors, semis, pinLevels, externals, pinCurrent, overvoltPins, faults, netOf, netVoltage };
   }
 
   /** True when both terminals join through wires / closed switches. */
@@ -792,6 +849,7 @@ export class Netlist {
       case 'mosfet': return ['d', 'g', 's'];
       case 'button': return ['p1', 'p2'];
       case 'buzzer': return ['+', '-'];
+      case 'motor': return ['+', '-'];
       case 'pot': return ['p1', 'w', 'p2'];
       case 'ldr': return ['p1', 'p2'];
       case 'cap': return ['p1', 'p2']; // open at logic level (documented)

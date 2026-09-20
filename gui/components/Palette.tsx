@@ -50,6 +50,7 @@ const GROUPS: Array<{ title: string; items: Item[] }> = [
       { type: 'buzzer', label: 'Buzzer', hint: 'active buzzer', glyph: '♪' },
       { type: 'servo', label: 'Servo SG90', hint: 'servoAttach/servoWrite; arm animates', glyph: '↻' },
       { type: 'relay', label: 'Relay', hint: 'coil on a pin; NO/NC contacts switch circuits', glyph: '⚡' },
+      { type: 'motor', label: 'DC motor', hint: 'spins on polarity, swap leads to reverse; drive through a MOSFET, PWM scales speed', glyph: 'Ⓜ' },
       { type: 'neopixel', label: 'NeoPixel', hint: 'WS2812 strip; npSetup/npPixel/npShow', glyph: '◍' },
     ],
   },

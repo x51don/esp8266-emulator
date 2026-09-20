@@ -123,6 +123,11 @@ export function footprintFor(type: string, params: Record<string, unknown>): Foo
         pins: [{ name: '+', x: 0, y: 0 }, { name: '-', x: PIN_GAP, y: 0 }],
         body: { x: -2, y: -14, w: PIN_GAP + 4, h: 28 },
       };
+    case 'motor':
+      return {
+        pins: [{ name: '+', x: 0, y: 0 }, { name: '-', x: PIN_GAP, y: 0 }],
+        body: { x: -6, y: -16, w: PIN_GAP + 12, h: 32 },
+      };
     case 'battery':
       return {
         pins: [{ name: '+', x: 0, y: 0 }, { name: '-', x: PIN_GAP, y: 0 }],
