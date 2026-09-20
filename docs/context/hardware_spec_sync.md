@@ -368,7 +368,22 @@ i blokuje connect()/server.begin() (fault "radio off"). Serwer/HTTP:
 wymagają STA-connected lub AP-up (test: begin() przed joinem -> brak
 trasowania w LAN).
 
-**Status.** TODO
+**Status.** DONE 2026-09-19. `wifi.mode` (maska bit1 STA / bit2 AP),
+`wifi.apAt` (softAP wstaje po 300 ms). begin() implikuje STA, softAP()
+implikuje AP; WiFi.mode(m) gasi interfejsy poza maską (OFF = oba);
+WiFi.getMode(); softAPdisconnect(). Dwa odstępstwa od planu/rdzenia,
+oba wymuszone przez istniejące kontrakty:
+1. Flaga WL_CONNECTED z AP działa TYLKO w trybie czystym AP
+   (maska bez bitu STA). W AP_STA status() zostaje asocjacjowo-
+   stażowy jak w rdzeniu - szkic roleta czeka przez status() na
+   asocjację i z odstępstwem wychodził z pętli po 300 ms z
+   localIP 0.0.0.0 (test 'IP address: 192.168.1.150').
+2. Serwery LAN NIE są bramowane stanem radia (plan zakładał
+   begin() po joinie). Kontrakty web-f5/examples: ser.begin() bez
+   żadnego WiFi i obsługa żądań - 20+ testów. softAPIP() za to
+   oddaje 0.0.0.0 gdy AP leży (testowalne życie interfejsu).
+softAPgetStationNum() = 0 (klientów AP nie symulujemy).
+Testy: tests/wifi-ap.test.ts (6).
 
 ---
 
@@ -385,3 +400,4 @@ trasowania w LAN).
 - 2026-09-19 | F2.3 watchdogi SW+HW 6.3 s + reset reason | tests/wdt.test.ts 5x red -> green; suite 526/526 | deadline-model (karmienie bez clock ops; clear+setTimeout na iterację = kwadratowy czas ścian); banner "wdt reset" tylko przy tripie; wyjątek głodzenia budżetu dla jawnego wdtFeed.
 - 2026-09-19 | F2.4 ADC: dzielnik boarda + krzywa chipa 0-1V | tests/adc.test.ts 5x red -> green; suite 534/534 | Board.adc (230k/100k, fs 1.0V [DS~]); knee 0.25V kwadratowo, ciągłe w 256; dzielnik 1/3.3 = stara skala w zakresie liniowym, różnica tylko w paśmie martwym.
 - 2026-09-19 | F2.5 timer0 zarezerwowany + timer1 23-bit | tests/timers.test.ts 5x red -> green; suite 540/540 | enable(0) z aktywnym radiem = 0 + ostrzeżenie serial; disconnect() oddaje timer0; clamp 0x7FFFFF*3.2us; lanLive (server.begin) też liczy się jako radio.
+- 2026-09-19 | F2.6 stany radia STA/AP | tests/wifi-ap.test.ts 6x red -> green; suite 546/546; roleta-v20 wymusiła korektę | getMode/mode maska; softAP 300 ms; WL_CONNECTED z AP tylko w trybie czystym AP (AP_STA = rdzeń, roleta wait-for-join); softAPIP 0.0.0.0 gdy AP leży; LAN bez bramy radia (kontrakt web-f5).

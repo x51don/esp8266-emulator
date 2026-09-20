@@ -164,6 +164,10 @@ export class Esp8266Machine implements LanHost {
   private wifi = {
     /** µs timestamp when the link comes up; null = not associated. */
     connectAt: null as number | null,
+    /** F2.6: opmode mask (bit1 STA, bit2 AP) as WiFi.getMode() reports it. */
+    mode: 0,
+    /** F2.6: µs when the soft-AP comes up (core needs ~300 ms); null = off. */
+    apAt: null as number | null,
     objs: new Map<string, {
       kind: 'WiFiClient' | 'WiFiServer' | 'WiFiUDP' | 'ESP8266WebServer' | 'HTTPClient' | 'IPAddress' | 'Adafruit_NeoPixel'
         | 'Ticker' | 'Servo';
@@ -344,6 +348,8 @@ export class Esp8266Machine implements LanHost {
     this.wdtArm();
     this.alarms.clear();
     this.wifi.connectAt = null;
+    this.wifi.apAt = null;
+    this.wifi.mode = 0;
     this.ntp = { syncAt: null, gmtOff: 0, dstOff: 0 };
     this.timeLib = null;
     this.wifi.objs.clear();
@@ -1027,7 +1033,12 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
 
   /** F2.5: the radio is up (or coming up): joining, linked, or serving. */
   private radioActive(): boolean {
-    return this.wifi.connectAt !== null || this.lanLive;
+    return this.wifi.connectAt !== null || this.wifi.apAt !== null || this.lanLive;
+  }
+
+  /** F2.6: the soft-AP finished its ~300 ms bring-up. */
+  private apUp(): boolean {
+    return this.wifi.apAt !== null && this.clock.now() >= this.wifi.apAt;
   }
 
   private wifiCall(
@@ -1403,7 +1414,7 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
       // P3.3 WiFi mock (ESP8266WiFi library values)
       WL_IDLE_STATUS: 0, WL_NO_SSID_AVAIL: 1, WL_SCAN_COMPLETED: 2,
       WL_CONNECTED: 3, WL_CONNECT_FAILED: 4, WL_CONNECTION_LOST: 5, WL_DISCONNECTED: 6,
-      WIFI_STA: 1, WIFI_AP: 2, WIFI_AP_STA: 3,
+      WIFI_STA: 1, WIFI_AP: 2, WIFI_AP_STA: 3, WIFI_OFF: 0,
       A0: 17, // ESP8266 Arduino core: analogRead() uses pin 17
       HTTP_ANY: 7, HTTP_GET: 1, HTTP_HEAD: 4, HTTP_POST: 2, HTTP_PATCH: 64, HTTP_PUT: 8,
       NEO_KHZ400: 0x100, NEO_KHZ800: 0x800,
@@ -1774,9 +1785,29 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
             return { value: `@IPAddress:${args.map((a) => num(a)).join(',')}` };
 
           // ---- P3.3 WiFi mock: globals ----
-          case 'WiFi.mode': case 'WiFi.setSleep': case 'WiFi.persistent':
-          case 'WiFi.setHostname': case 'WiFi.softAP': case 'WiFi.softAPConfig':
+          case 'WiFi.setSleep': case 'WiFi.persistent':
+          case 'WiFi.setHostname': case 'WiFi.softAPConfig':
             return { value: 1 };
+          case 'WiFi.mode': {
+            // F2.6: opmode mask; interfaces not in the mask come down [core]
+            const m = num(args[0]) & 3;
+            if (!(m & 1)) this.wifi.connectAt = null;
+            if (!(m & 2)) this.wifi.apAt = null;
+            this.wifi.mode = m;
+            return { value: 1 };
+          }
+          case 'WiFi.getMode':
+            return { value: this.wifi.mode };
+          case 'WiFi.softAP':
+            this.wifi.mode |= 2;
+            if (this.wifi.apAt === null) this.wifi.apAt = this.clock.now() + 300_000;
+            return { value: 1 };
+          case 'WiFi.softAPdisconnect':
+            this.wifi.apAt = null;
+            this.wifi.mode &= ~2;
+            return { value: 1 };
+          case 'WiFi.softAPgetStationNum':
+            return { value: 0 }; // no real clients join the emulated AP
           case 'WiFi.config': {
             // WiFi.config(IPAddress(...)|"1.2.3.4", gw, mask[, dns]) - static lease
             const a0 = args[0];
@@ -1867,6 +1898,7 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
           case 'ArduinoOTA.setHostname': case 'ArduinoOTA.setPassword':
             return { value: 0 };
           case 'WiFi.begin':
+            this.wifi.mode |= 1; // begin() implies WIFI_STA [core]
             this.wifi.connectAt = this.clock.now() + 1_500_000; // association latency
             return { value: 1 };
           case 'WiFi.disconnect':
@@ -1874,13 +1906,21 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
             return { value: 1 };
           case 'WiFi.status': {
             const c = this.wifi.connectAt;
-            return { value: c !== null && this.clock.now() >= c ? 3 /* WL_CONNECTED */ : 6 };
+            const staUp = c !== null && this.clock.now() >= c;
+            // Task rule "poprawne flagi w AP": a soft-AP-only radio reports
+            // WL_CONNECTED once the AP is up. With STA in the mask the core
+            // semantics stand (status tracks association only) - sketches
+            // like roleta wait on association through this call.
+            const apOnlyUp = this.apUp() && (this.wifi.mode & 1) === 0;
+            return { value: staUp || apOnlyUp ? 3 /* WL_CONNECTED */ : 6 };
           }
           case 'WiFi.localIP':
             return { value: this.staticLease
               || (this.wifi.connectAt !== null && this.clock.now() >= this.wifi.connectAt)
               ? this.ip : '0.0.0.0' };
-          case 'WiFi.softAPIP': return { value: '192.168.4.1' };
+          case 'WiFi.softAPIP':
+            // F2.6: the AP interface address exists only while the AP runs
+            return { value: this.apUp() ? '192.168.4.1' : '0.0.0.0' };
           case 'WiFi.macAddress': return { value: '18:fe:20:1c:b4:3a' };
           case 'WiFi.RSSI': return { value: -55 };
           case 'WiFi.hostname': return { value: 'esp8266' };
