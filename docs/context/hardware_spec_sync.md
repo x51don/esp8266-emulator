@@ -258,7 +258,22 @@ hard. ESP.wdtEnable(ms) restartuje soft. getResetReason/getResetInfo.
 Test: loop bez delay -> po ~6.3s wdt reset, licznik bootów w EEPROM
 rośnie, getResetReason() zwraca "Software Watchdog".
 
-**Status.** TODO
+**Status.** DONE 2026-09-19. Model: `wdtDeadline` (µs wirtualne) +
+pojedyncze zadanie zegara; karmienie (powrót loopOnce, suspend delay,
+ESP.wdtFeed) to przydanie liczby - zero operacji na clock przy gorącej
+ścieżce (Clock.clear jest O(heap); pierwsza implementacja z clear+setTimeout
+na każdą iterację loop zrobiła kwadratowy czas ścian w tests/resilience).
+Wygaśnięcie deadline: faza != running / restartRequested / deep-sleep ->
+cisza; main w delay -> przedłuż (delay karmi w rdzeniu); budżet yield
+wyczerpany a szkic choć raz karmił przez ESP.wdtFeed -> przedłuż
+(deviacja: artefakt cięcia CPU hosta nie może zabić programu, który karmi;
+prawdziwy spin-lock bez karmienia nadal tripuje). Trip: reason latch
+("Software Watchdog" / po wdtDisable "Hardware Watchdog"),
+restartRequested -> advance() dokańcza reboot; run() zatrzaskuje
+bootReason i tylko przy watchdog drukuje banner "wdt reset" (normalny boot
+cisza - stare testy liczby linii). ESP.restart -> "Software System Restart",
+wake z deep-sleep -> "Deep-Sleep Awake"; getResetReason/getResetInfo ->
+bootReason bieżącego bootu. WDT rozbraja się przy deep-sleep i halt().
 
 ---
 
@@ -350,3 +365,4 @@ trasowania w LAN).
 - 2026-09-19 | F1.3 Vf diody + drganie styków | tests/debounce.test.ts 8x red -> green; suite 507/507 | bounce oknem czasu wirtualnego (determ.); zbocza w jednym advance scalą się do 1 ISR; +digitalPinToInterrupt.
 - 2026-09-19 | F2.1 przerwania: wywłaszczenie + latencja 2 us + maska | tests/irq.test.ts 6x red -> green; suite 513/513 | ISR startuje przy yield głównego kodu (busy loop też); pending-bit scala krawędzie; timer i Ticker wspólną kolejką.
 - 2026-09-19 | F2.2 EEPROM = sektor flash: mir RAM + cykle P/E | tests/eeprom.test.ts 5x red -> green; suite 519/519 | commit czystego = bez cyklu; 100001 commit = 0 i worn; erase RAM-side; eepromStats/eepromSetCycles.
+- 2026-09-19 | F2.3 watchdogi SW+HW 6.3 s + reset reason | tests/wdt.test.ts 5x red -> green; suite 526/526 | deadline-model (karmienie bez clock ops; clear+setTimeout na iterację = kwadratowy czas ścian); banner "wdt reset" tylko przy tripie; wyjątek głodzenia budżetu dla jawnego wdtFeed.

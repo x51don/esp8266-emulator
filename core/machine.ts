@@ -60,6 +60,8 @@ const PUMP_SLICE = 5000; // tick yields before the CPU hands the world a turn
 const ISR_LATENCY_US = 2;
 /** F2.2: rated erase/write endurance of the flash sector holding EEPROM. */
 const EEPROM_MAX_CYCLES = 100_000;
+/** F2.3: both watchdogs fire ~6.3 s after the last scheduler feed [core Esp.cpp]. */
+const WDT_TIMEOUT_US = 6_300_000;
 /**
  * Interpreter yields allowed per advance() call. The interpreter is the chip
  * speed: when a sketch burns this budget the simulation slows down relative
@@ -123,6 +125,24 @@ export class Esp8266Machine implements LanHost {
   private isrQueue: Array<{ fn: string; at: number }> = [];
   /** F2.1: noInterrupts()/interrupts() gate ISR entry; edges stay pending. */
   private interruptsEnabled = true;
+  /** F2.3: one 6.3 s clock task rearmed by every scheduler feed; when it
+   *  fires with the soft WDT enabled the reset reads "Software Watchdog",
+   *  with wdtDisable() only the hardware one is left -> "Hardware Watchdog". */
+  private wdtSoftEnabled = true;
+  /** Virtual µs when the watchdog bites; a feed just moves this number, the
+   *  clock task rechecks on its old deadline (Clock.clear is O(heap), so the
+   *  hot feed path must never touch it). */
+  private wdtDeadline = -1;
+  private wdtTask: TimerId | null = null;
+  /** main's delay() ends at this µs - an idle chip feeds its own watchdog */
+  private wdtDelayUntil: number | null = null;
+  /** an explicit ESP.wdtFeed() ran this boot: a host-starved program is
+   *  alive (it fed as often as its slice budget allowed) - never kill it */
+  private wdtEverFed = false;
+  /** trip cause latched across the reboot; consumed as bootReason by run() */
+  private resetReason: string | null = null;
+  /** what ESP.getResetReason() answers during the current boot */
+  private bootReason = 'Power-on Reset';
   /** P3.3 WiFi mock: scripted radio + object registry. No sockets. */
   private wifi = {
     /** µs timestamp when the link comes up; null = not associated. */
@@ -296,6 +316,15 @@ export class Esp8266Machine implements LanHost {
     this.eepromImage = null; // RAM mirror is volatile; setup() re-begins it
     this.eepromModified = false;
     this.serialLog = [];
+    // F2.3: latch why the previous life ended; the boot ROM prints "wdt reset"
+    this.bootReason = this.resetReason ?? 'Power-on Reset';
+    this.resetReason = null;
+    this.wdtSoftEnabled = true; // the core re-enables the soft WDT every boot
+    this.wdtEverFed = false;
+    if (this.bootReason.includes('Watchdog')) {
+      this.serialLog.push({ id: ++this.lineSeq, tMs: 0, text: 'wdt reset' });
+    }
+    this.wdtArm();
     this.alarms.clear();
     this.wifi.connectAt = null;
     this.ntp = { syncAt: null, gmtOff: 0, dstOff: 0 };
@@ -376,6 +405,7 @@ export class Esp8266Machine implements LanHost {
     }
     if (this.wakeAt !== null && this.clock.now() >= this.wakeAt) {
       this.wakeAt = null; // F9: deep-sleep wake-up is a reset as well
+      this.resetReason = 'Deep-Sleep Awake';
       this.run();
       return;
     }
@@ -1094,7 +1124,11 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
     if (this.machinePhase !== 'running') return;
     const task = this.clock.setTimeout(Math.max(1, Math.round(us)), () => {
       if (forIsr) this.isrTask = null;
-      else if (this.cpuTask === task) { this.cpuTask = null; this.mainSuspended = false; }
+      else if (this.cpuTask === task) {
+        this.cpuTask = null;
+        this.mainSuspended = false;
+        this.wdtDelayUntil = null;
+      }
       else return; // stale wake-up after halt/restart
       this.step();
     });
@@ -1156,6 +1190,7 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
         this.mainSuspended = false;
         if (this.machinePhase !== 'running' || !this.interp) return;
         this.mainGen = this.interp.loopOnce();
+        this.wdtArm(); // returning to loop() is the core's feed point
         this.scheduleWake(0, false);
         return;
       }
@@ -1164,6 +1199,7 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
         if (isIsr) this.scheduleWake(pause.us, true);
         else {
           this.mainSuspended = true;
+          this.wdtDelayUntil = this.clock.now() + Math.max(0, pause.us);
           this.scheduleWake(pause.us, false);
         }
         // F2.1: even a parked delay() must let a ready ISR in right now.
@@ -1199,6 +1235,57 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
     // F2.2: power down also drops the volatile EEPROM mirror
     this.eepromImage = null;
     this.eepromModified = false;
+    if (this.wdtTask !== null) this.clock.clear(this.wdtTask);
+    this.wdtTask = null;
+    this.wdtDeadline = -1;
+    this.wdtDelayUntil = null;
+  }
+
+  /** F2.3: a scheduler feed rearms the watchdog; the chip expects one every
+   *  6.3 s while the sketch runs (loop() return, delay(), ESP.wdtFeed()).
+   *  O(1): it only moves a number; the armed task notices on its own. */
+  private wdtArm(): void {
+    this.wdtDeadline = this.clock.now() + WDT_TIMEOUT_US;
+    if (this.wdtTask === null) this.wdtArmTask();
+  }
+
+  private wdtArmTask(): void {
+    const wait = Math.max(0, this.wdtDeadline - this.clock.now());
+    this.wdtTask = this.clock.setTimeout(wait, () => {
+      this.wdtTask = null;
+      if (this.wdtTask === null && this.clock.now() < this.wdtDeadline) {
+        this.wdtArmTask(); // the deadline moved past this firing: re-wait
+        return;
+      }
+      this.wdtCheck();
+    });
+  }
+
+  /** The deadline closed: feed itself if main merely idles in delay(),
+   *  otherwise the program is stuck - latch the reason and reboot. */
+  private wdtCheck(): void {
+    this.wdtTask = null;
+    if (this.machinePhase !== 'running' || this.restartRequested || this.wakeAt !== null) {
+      this.wdtDeadline = -1;
+      return;
+    }
+    if (this.mainSuspended && this.wdtDelayUntil !== null && this.clock.now() < this.wdtDelayUntil) {
+      this.wdtArm(); // delay() feeds continuously in the core - no false trip
+      return;
+    }
+    if (this.clock.now() < this.wdtDeadline) {
+      this.wdtArmTask(); // fed after this task was armed: wait for the real deadline
+      return;
+    }
+    // Emulator artifact: the per-advance slice budget can starve a spin loop
+    // that feeds at every iteration. The host paused that program, not the
+    // program blocking the loop - a boot that fed at all stays alive.
+    if (this.yieldBudget === 0 && this.wdtEverFed) {
+      this.wdtArm();
+      return;
+    }
+    this.resetReason = this.wdtSoftEnabled ? 'Software Watchdog' : 'Hardware Watchdog';
+    this.restartRequested = true; // advance() finishes the reset like ESP.restart()
   }
 
   // ---------- registers ----------
@@ -1614,16 +1701,33 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
           }
 
           // ---- ESP. helpers ----
-          case 'ESP.wdtFeed': case 'ESP.sleep':
+          case 'ESP.wdtFeed':
+            this.wdtArm();
+            this.wdtEverFed = true;
             return { value: 0 };
+          case 'ESP.sleep':
+            return { value: 0 };
+          case 'ESP.wdtDisable': // only the hardware WDT survives this [Esp.cpp]
+            this.wdtSoftEnabled = false;
+            return { value: 0 };
+          case 'ESP.wdtEnable':
+            this.wdtSoftEnabled = true;
+            this.wdtArm();
+            return { value: 0 };
+          case 'ESP.getResetReason': case 'ESP.getResetInfo':
+            return { value: this.bootReason };
           case 'ESP.deepSleep': case 'ESP.deepSleepStart':
             // µs argument (mode ignored); wake-up = reset in advance()
             this.wakeAt = this.clock.now() + Math.max(1, Math.round(num(args[0])));
+            if (this.wdtTask !== null) this.clock.clear(this.wdtTask); // WDT sleeps too
+            this.wdtTask = null;
+            this.wdtDeadline = -1;
             return { value: 0 };
           case 'ESP.deepSleepEnd':
             this.wakeAt = null;
             return { value: 0 };
           case 'ESP.restart':
+            this.resetReason = 'Software System Restart';
             this.restartRequested = true;
             return { value: 0 };
           case 'ESP.getFreeHeap':
