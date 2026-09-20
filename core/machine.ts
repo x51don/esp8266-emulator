@@ -938,7 +938,7 @@ private httpCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
       if (obj.timeoutMs === undefined) obj.timeoutMs = 5000;
       return { value: parts ? 1 : 0 };
     }
-    case 'setTimeout': case 'setConnectTimeout':
+    case 'setTimeout': case 'setConnectTimeout': case 'setConnectionTimeout':
       obj.timeoutMs = num(args[0]);
       return { value: 0 };
     case 'print': case 'println':
@@ -987,7 +987,6 @@ private httpCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
       return { value: 0 };
     case 'setReuse': case 'setAuthorization': case 'addHeader': case 'setFollowRedirects':
     case 'setDNS': case 'useHTTP11': case 'setCTimeout': case 'setLedOff': case 'setLedOn':
-    case 'setConnectionTimeout': case 'setConnectTimeout':
       return { value: 0 };
     default:
       throw new Error(`'HTTPClient' has no method '${meth}'`);
