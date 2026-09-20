@@ -301,7 +301,17 @@ Test: 1.65V na A0 (wemos) -> ~515 (3.3*515/1024=1.658), 0.66V -> ~206
 (0.2V < 0.25 nieliniowość -> 206 skompensowane wg modelu),
 1.0V TOUT saturacja.
 
-**Status.** TODO
+**Status.** DONE 2026-09-19. `Board.adc = { chipFullScaleV: 1.0,
+divider: {230k, 100k} }` (stała ADC_0_TO_3V3, oba boardy; komentarz
+oznacza [DS~]: prawdziwe rewizje D1 mini prowadzą A0 prosto na TOUT -
+dzielnik to atrybut boarda ze specu zadania, nie cecha chipa).
+`adcChipCurve(vTout, fs)` [machine.ts]: >= fs -> 1023; < 0.25*fs ->
+kwadratowa kompresja 1023*knee*(v/knee)^2 (dokładnie ciągła z liniową w
+knee: 0.25 V -> 256); poza tym liniowa. analogRead: A0 -> dzielnik ->
+krzywa. Uwaga do planu testu: przy dzielniku 1/3.3 skala A0 jest liniowa
+0..3.3 V, więc różnica vs stary model widać dopiero w paśmie martwym
+(0.66 V na A0: stary 205, model 164; 0.33 V: 102 vs 41) - testy
+tests/adc.test.ts dokładnie to mierzą.
 
 ---
 
@@ -366,3 +376,4 @@ trasowania w LAN).
 - 2026-09-19 | F2.1 przerwania: wywłaszczenie + latencja 2 us + maska | tests/irq.test.ts 6x red -> green; suite 513/513 | ISR startuje przy yield głównego kodu (busy loop też); pending-bit scala krawędzie; timer i Ticker wspólną kolejką.
 - 2026-09-19 | F2.2 EEPROM = sektor flash: mir RAM + cykle P/E | tests/eeprom.test.ts 5x red -> green; suite 519/519 | commit czystego = bez cyklu; 100001 commit = 0 i worn; erase RAM-side; eepromStats/eepromSetCycles.
 - 2026-09-19 | F2.3 watchdogi SW+HW 6.3 s + reset reason | tests/wdt.test.ts 5x red -> green; suite 526/526 | deadline-model (karmienie bez clock ops; clear+setTimeout na iterację = kwadratowy czas ścian); banner "wdt reset" tylko przy tripie; wyjątek głodzenia budżetu dla jawnego wdtFeed.
+- 2026-09-19 | F2.4 ADC: dzielnik boarda + krzywa chipa 0-1V | tests/adc.test.ts 5x red -> green; suite 534/534 | Board.adc (230k/100k, fs 1.0V [DS~]); knee 0.25V kwadratowo, ciągłe w 256; dzielnik 1/3.3 = stara skala w zakresie liniowym, różnica tylko w paśmie martwym.

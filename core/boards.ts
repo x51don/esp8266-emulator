@@ -27,7 +27,23 @@ export interface Board {
   gpioFor(name: string | number): number | null;
   /** Reverse lookup GPIO -> primary silk label ("D4"), or null for rails. */
   labelFor(gpio: number): string | null;
+  /** F2.4: ADC front-end. chipFullScaleV is the ESP8266EX TOUT native full
+   *  scale (1.0 V [DS]); divider turns the A0 silk pin into the documented
+   *  0..3.3 V range. null divider = TOUT wired straight to the pin. */
+  adc: {
+    chipFullScaleV: number;
+    divider: { seriesOhms: number; shuntOhms: number } | null;
+  };
 }
+
+/** Task spec: D1 mini A0 carries an input divider to 1.0 V at 3.3 V
+ *  (230k/100k = 1/3.3); NodeMCU v3 is modeled on the same 0..3.3 V scale.
+ *  [DS~ real D1 mini revisions wire A0 straight to TOUT - the divider is
+ *  the board-level attribute the task specified, never a chip property.] */
+const ADC_0_TO_3V3: Board['adc'] = {
+  chipFullScaleV: 1.0,
+  divider: { seriesOhms: 230_000, shuntOhms: 100_000 },
+};
 
 // NodeMCU-compatible mapping shared by Wemos D1 mini and NodeMCU v3.
 export const D_PIN_TO_GPIO: Record<string, number> = {
@@ -37,7 +53,7 @@ export const D_PIN_TO_GPIO: Record<string, number> = {
 // GPIO9/10 = flash interface, never exposed.
 const INTERNAL_GPIOS = new Set([9, 10]);
 
-function makeBoard(id: string, name: string, rails: Rail[]): Board {
+function makeBoard(id: string, name: string, rails: Rail[], adc: Board['adc']): Board {
   const gpioToLabel = new Map<number, string>();
   for (const r of rails) if (r.gpio !== null) gpioToLabel.set(r.gpio, r.name);
 
@@ -64,6 +80,7 @@ function makeBoard(id: string, name: string, rails: Rail[]): Board {
     name,
     mcu: 'ESP8266EX',
     rails,
+    adc,
     gpioFor,
     labelFor: (gpio) => gpioToLabel.get(gpio) ?? null,
   };
@@ -117,8 +134,8 @@ const NODEMCU_RAILS: Rail[] = [
   { name: 'VU',  gpio: null, row: 10, side: 'right' },
 ];
 
-export const wemosD1Mini: Board = makeBoard('wemos-d1-mini', 'Wemos D1 mini', WEMOS_RAILS);
-export const nodeMcuV3: Board = makeBoard('nodemcu-v3', 'NodeMCU v3 (ESP-12E)', NODEMCU_RAILS);
+export const wemosD1Mini: Board = makeBoard('wemos-d1-mini', 'Wemos D1 mini', WEMOS_RAILS, ADC_0_TO_3V3);
+export const nodeMcuV3: Board = makeBoard('nodemcu-v3', 'NodeMCU v3 (ESP-12E)', NODEMCU_RAILS, ADC_0_TO_3V3);
 
 const REGISTRY: Record<string, Board> = {
   [wemosD1Mini.id]: wemosD1Mini,

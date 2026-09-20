@@ -30,6 +30,21 @@ import { Interpreter, type SketchGen, type HostResult, type HostValue } from './
 import { parse } from './sketch/parser';
 import { getBoard } from './boards';
 
+/**
+ * ESP8266EX 10-bit SAR transfer [DS]: saturates at the native full scale
+ * (1.0 V on TOUT) and compresses strongly below the ~0.25 V knee. The
+ * quadratic segment meets the linear one exactly at the knee, keeping the
+ * curve continuous and monotonic like the measured die.
+ */
+export function adcChipCurve(vTout: number, fullScaleV = 1.0): number {
+  const v = vTout / fullScaleV;
+  if (v <= 0) return 0;
+  if (v >= 1) return 1023;
+  const knee = 0.25;
+  if (v < knee) return Math.round(1023 * knee * (v / knee) * (v / knee));
+  return Math.round(1023 * v);
+}
+
 export interface SerialLine {
   /** Stable monotonic id: React keys survive window shifts. */
   id: number;
@@ -1352,14 +1367,19 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
   }
 
   /**
-   * ADC conversion of the voltage netlist.analogVolts reports on A0.
-   * Only GPIO 17 (the Arduino A0 alias) has an ADC on the ESP8266.
+   * F2.4 ADC chain: A0 net voltage -> board input divider -> ESP8266EX
+   * 10-bit SAR curve with its native 1.0 V full scale and compressed band
+   * below the ~0.25 V knee [DS]. Only GPIO 17 (the Arduino A0 alias) has
+   * an ADC on the ESP8266.
    */
   analogRead(gpio: number): number {
     if (gpio !== 17) return 0;
     const v = this.netlist.analogVolts('mcu.A0');
     if (v === null) return 0;
-    return Math.max(0, Math.min(1023, Math.round((v / 3.3) * 1023)));
+    const adc = getBoard(this.boardId).adc;
+    const d = adc.divider;
+    const vTout = d === null ? v : (v * d.shuntOhms) / (d.seriesOhms + d.shuntOhms);
+    return adcChipCurve(vTout, adc.chipFullScaleV);
   }
 
   // ---------- Arduino API ----------
