@@ -337,7 +337,14 @@ okresu do 26.7 s (23-bit), timer0 bez clampa rozsądnego;
 (c) tick taktowany z Clock (już jest) - doliczyć: ISR timera też przez
 latencję ISR i wywłaszczenie z F2.1.
 
-**Status.** TODO
+**Status.** DONE 2026-09-19. `radioActive()` = WiFi.begin rzucony
+(connectAt != null, do disconnect()) albo lanLive (WebServer.begin).
+timerAlarmEnable(0) przy aktywnym radiu: serial "timer0 reserved by
+WiFi stack", zwrot 0, brak uzbrojenia; po WiFi.disconnect() timer0
+wolny. timerAlarmWrite(1): clamp `TIMER1_MAX_PERIOD_US` = 0x7FFFFF *
+3.2 µs = 26 843 542 µs (23-bit /256 [core timer.cpp]). ISR timera
+korzysta z kolejki F2.1 (latencja 2 µs + wywłaszczenie) - bez zmian.
+Testy: tests/timers.test.ts (6).
 
 ---
 
@@ -377,3 +384,4 @@ trasowania w LAN).
 - 2026-09-19 | F2.2 EEPROM = sektor flash: mir RAM + cykle P/E | tests/eeprom.test.ts 5x red -> green; suite 519/519 | commit czystego = bez cyklu; 100001 commit = 0 i worn; erase RAM-side; eepromStats/eepromSetCycles.
 - 2026-09-19 | F2.3 watchdogi SW+HW 6.3 s + reset reason | tests/wdt.test.ts 5x red -> green; suite 526/526 | deadline-model (karmienie bez clock ops; clear+setTimeout na iterację = kwadratowy czas ścian); banner "wdt reset" tylko przy tripie; wyjątek głodzenia budżetu dla jawnego wdtFeed.
 - 2026-09-19 | F2.4 ADC: dzielnik boarda + krzywa chipa 0-1V | tests/adc.test.ts 5x red -> green; suite 534/534 | Board.adc (230k/100k, fs 1.0V [DS~]); knee 0.25V kwadratowo, ciągłe w 256; dzielnik 1/3.3 = stara skala w zakresie liniowym, różnica tylko w paśmie martwym.
+- 2026-09-19 | F2.5 timer0 zarezerwowany + timer1 23-bit | tests/timers.test.ts 5x red -> green; suite 540/540 | enable(0) z aktywnym radiem = 0 + ostrzeżenie serial; disconnect() oddaje timer0; clamp 0x7FFFFF*3.2us; lanLive (server.begin) też liczy się jako radio.

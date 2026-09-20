@@ -77,6 +77,8 @@ const ISR_LATENCY_US = 2;
 const EEPROM_MAX_CYCLES = 100_000;
 /** F2.3: both watchdogs fire ~6.3 s after the last scheduler feed [core Esp.cpp]. */
 const WDT_TIMEOUT_US = 6_300_000;
+/** F2.5: timer1 is 23-bit on /256: 0x7FFFFF ticks at 3.2 us [core timer.cpp]. */
+const TIMER1_MAX_PERIOD_US = Math.round(0x7fffff * 3.2);
 /**
  * Interpreter yields allowed per advance() call. The interpreter is the chip
  * speed: when a sketch burns this budget the simulation slows down relative
@@ -1023,6 +1025,11 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
   return req.resp ?? null;
 }
 
+  /** F2.5: the radio is up (or coming up): joining, linked, or serving. */
+  private radioActive(): boolean {
+    return this.wifi.connectAt !== null || this.lanLive;
+  }
+
   private wifiCall(
     obj: { kind: string; port: number; peer: string | null; listening: boolean },
     meth: string,
@@ -1651,13 +1658,22 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
 
           case 'timerAlarmWrite': {
             const which = num(args[0]);
+            let periodUs = Math.max(1, num(args[1]));
+            // F2.5: the 23-bit counter physically cannot hold a longer period.
+            if (which === 1) periodUs = Math.min(periodUs, TIMER1_MAX_PERIOD_US);
             this.alarms.set(which, {
-              periodUs: Math.max(1, num(args[1])), reload: !!args[2], task: null, armed: false,
+              periodUs, reload: !!args[2], task: null, armed: false,
             });
             return { value: 1 };
           }
           case 'timerAlarmEnable': {
             const which = num(args[0]);
+            // F2.5: CCOUNT0 belongs to the WiFi stack while the radio runs;
+            // a sketch arming it anyway loses the conflict [core docs].
+            if (which === 0 && this.radioActive()) {
+              this.appendText('timer0 reserved by WiFi stack\n');
+              return { value: 0 };
+            }
             const a = this.alarms.get(which);
             if (a && !a.armed) {
               a.armed = true;
