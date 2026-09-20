@@ -19,6 +19,7 @@ interface Props {
   onProjectLoad: (name: string) => void;
   onNewProject: () => void;
   onProjectSave: () => void;
+  onProjectSaveAs: () => void;
   onProjectDelete: (name: string) => void;
   onExport: () => void;
   onImportFile: (file: File) => void;
@@ -75,8 +76,11 @@ export function Toolbar(p: Props) {
       <button className="btn" onClick={p.onNewProject} title="empty sketch + empty board">
         ✚ New
       </button>
-      <button className="btn" onClick={p.onProjectSave} title="save sketch + circuit under a name">
+      <button className="btn" onClick={p.onProjectSave} title="save over the open project (asks for a name when none is open)">
         💾 Save
+      </button>
+      <button className="btn" onClick={p.onProjectSaveAs} title="save under a new name and continue in that project">
+        💾 Save as…
       </button>
       <select
         value=""

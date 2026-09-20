@@ -336,8 +336,8 @@ export function App() {
     applyDoc(fresh, NEW_SKETCH_TEMPLATE);
   }, [applyDoc, boardId]);
 
-  const onProjectSave = useCallback(() => {
-    const name = window.prompt('Save project as:', 'project-1');
+  const onProjectSaveAs = useCallback(() => {
+    const name = window.prompt('Save project as:', openProject.current ?? 'project-1');
     if (!name || !name.trim()) return;
     try {
       store.save({ ...currentProject(), name: name.trim() });
@@ -351,6 +351,23 @@ export function App() {
       );
     }
   }, [store, currentProject]);
+
+  // Save overwrites the open project silently (autosave does the same every
+  // second); with nothing open yet it degrades to Save as - the first write
+  // is what gives the project its name.
+  const onProjectSave = useCallback(() => {
+    const name = openProject.current;
+    if (!name) return onProjectSaveAs();
+    try {
+      store.save({ ...currentProject(), name });
+    } catch (e) {
+      setError(
+        `could not save project (${
+          e instanceof Error ? e.name : 'error'
+        }) - browser storage is full`,
+      );
+    }
+  }, [store, currentProject, onProjectSaveAs]);
 
   const onProjectLoad = useCallback((name: string) => {
     const data = store.load(name);
@@ -569,6 +586,7 @@ export function App() {
         onNewProject={onNewProject}
         onProjectLoad={onProjectLoad}
         onProjectSave={onProjectSave}
+        onProjectSaveAs={onProjectSaveAs}
         onProjectDelete={onProjectDelete}
         onExport={onExport}
         onImportFile={onImportFile}
