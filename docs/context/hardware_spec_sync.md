@@ -454,6 +454,7 @@ click/submit wdokumencie srcDoc, wstecz. Testy: tests/webview.test.ts.
 
 ---
 # Dziennik zmian implementacji
+- 2026-09-19 F3.3 fix: panel HTTP sam podaza za IP czipu (sketch z WiFi.config() przepisywuje sie na .150 - pole URL i hint), komunikat "no response" podaje biezacy adres; zweryfikowane headless (Playwright): auto-IP, klik linkow, back.
 - 2026-09-19 F3.3: widok Page w panelu HTTP - HTML serwera szkicu (rolema) renderowany w iframe sandbox, linki i formularze nawigują przez LAN; gui/webview.ts + 9 testów; 569 zielone.
 - 2026-09-19 F3.2: etykiety komponentów pod symbolem (dialog Label, round-trip, walidacja) + Auto-wire podpisuje części nazwami stałych/zmiennych ze szkicu; 7 nowych testów, 560 zielone. commit db3a5a3
 

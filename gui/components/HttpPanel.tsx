@@ -8,7 +8,7 @@
  * full ESP8266WebServer sketch (roleta UI) into a browsable page.
  */
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { HttpResp } from '../../core/lan';
 import { formRequest, looksHtml, resolveHref } from '../webview';
 
@@ -66,6 +66,16 @@ export function HttpPanel({ ip, running, onFetch }: Props) {
   const pageRef = useRef<Page | null>(null);
   pageRef.current = page;
 
+  // a sketch with a static IP renumbers its chip at connect (roleta -> .150);
+  // follow it in the URL box until the user edits the field themselves
+  const autoUrlRef = useRef(`http://${ip}/`);
+  useEffect(() => {
+    const next = `http://${ip}/`;
+    if (url === autoUrlRef.current) setUrl(next);
+    autoUrlRef.current = next;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ip]);
+
   const openPage = (p: Page, from?: Page | null) => {
     if (from) backRef.current = [...backRef.current.slice(-29), from];
     setPage(p);
@@ -85,7 +95,18 @@ export function HttpPanel({ ip, running, onFetch }: Props) {
     const resp = onFetch(m, target, b);
     if (resp && looksHtml(resp.body)) openPage({ url: target, html: resp.body }, from);
     else if (resp) openPage({ url: target, html: `<pre style="font:13px ui-monospace,monospace;padding:10px;white-space:pre-wrap">${resp.status} - ${target}\n\n${resp.body || '(empty body)'}</pre>` }, from);
-    else openPage({ url: target, html: `<pre style="font:13px ui-monospace,monospace;padding:10px">${m} ${target}\n\nno response - is the sketch running and inside handleClient()?</pre>` }, from);
+    else
+      openPage(
+        {
+          url: target,
+          html: `<pre style="font:13px ui-monospace,monospace;padding:10px">${m} ${target}
+
+no response.
+${running ? 'is the sketch reaching server.handleClient()?' : 'start the sketch with Run first.'}
+this chip currently answers at http://${ip}/ (a sketch calling\nWiFi.config() renumbers it - use the address shown in the badge)</pre>`,
+        },
+        from,
+      );
     setLog((l) => [{ id: nextId++, method: m, url: target, resp, ms: 0 }, ...l].slice(0, 50));
   };
 
