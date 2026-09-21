@@ -34,6 +34,8 @@ const LS = {
   sketch: 'esp8266-emu.sketch',
   schematic: 'esp8266-emu.schematic',
   board: 'esp8266-emu.board',
+  project: 'esp8266-emu.openProject',
+  sketchName: 'esp8266-emu.sketchName',
 };
 
 /** F10: every device is one Esp8266Machine on the shared virtual LAN. */
@@ -78,6 +80,10 @@ export function App() {
   const [sketch, setSketch] = useState<string>(
     () => localStorage.getItem(LS.sketch) ?? EXAMPLE_SKETCHES['blink.ino'],
   );
+  /** display name: last .ino opened, project loaded, or example picked */
+  const [sketchName, setSketchName] = useState<string>(
+    () => localStorage.getItem(LS.sketchName) || 'sketch.ino',
+  );
   const [running, setRunning] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [serialLines, setSerialLines] = useState<readonly SerialLine[]>([]);
@@ -96,8 +102,25 @@ export function App() {
   const pendingEeprom = useRef<Uint8Array | null>(null);
   /** F11: per-device flashes to plant at creation (project load, ids are fresh) */
   const pendingSeed = useRef(new Map<number, Uint8Array>());
-  /** F11: named project the bench is autosaved into (null: nothing to autosave) */
-  const openProject = useRef<string | null>(null);
+  /** F11: named project the bench is autosaved into (null: nothing to autosave).
+   *  Survives reloads - the sketch/circuit drafts restore too, so the
+   *  restored document belongs to the restored project name. */
+  const openProject = useRef<string | null>(
+    (() => {
+      const saved = localStorage.getItem(LS.project);
+      return saved && store.list().includes(saved) ? saved : null;
+    })(),
+  );
+  const [projectLabel, setProjectLabel] = useState<string | null>(() => openProject.current);
+  const setOpenProject = useCallback((name: string | null) => {
+    openProject.current = name;
+    if (name) localStorage.setItem(LS.project, name);
+    else localStorage.removeItem(LS.project);
+    setProjectLabel(name);
+  }, []);
+  useEffect(() => {
+    safeStore(LS.sketchName, sketchName);
+  }, [sketchName]);
   // ---- F10: devices (each one machine on the LAN, own sketch) ----
   const [devices, setDevices] = useState<Device[]>(() => [makeDevice()]);
   const [activeId, setActiveId] = useState(1);
@@ -284,14 +307,15 @@ export function App() {
       )
     )
       return;
-    openProject.current = null; // an example must not autosave into the project
+    setOpenProject(null); // an example must not autosave into the project
+    setSketchName(name);
     // a preset hardwires pins; a board that lacks one must not silently die
     try {
       applyDoc(loadExample(name, boardId), src);
     } catch (e) {
       setError(`example "${name}" does not fit this board: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [applyDoc, boardId]);
+  }, [applyDoc, boardId, setOpenProject]);
 
   // ---- auto-wire: the sketch implies its own circuit ----
   const onAutowire = useCallback(() => {
@@ -302,10 +326,10 @@ export function App() {
       )
     )
       return;
-    openProject.current = null; // generated wiring must not autosave over a project
+    setOpenProject(null); // generated wiring must not autosave over a project
     const sc = buildFromPlan(plan, boardId);
     applyDoc(sc, sketch);
-  }, [sketch, applyDoc, boardId]);
+  }, [sketch, applyDoc, boardId, setOpenProject]);
 
   // ---- projects ----
   const currentProject = useCallback(
@@ -329,19 +353,20 @@ export function App() {
 
   const onNewProject = useCallback(() => {
     if (!confirmOr('Start a new project? The current sketch and circuit are replaced.')) return;
-    openProject.current = null;
+    setOpenProject(null);
+    setSketchName('sketch.ino');
     pendingEeprom.current = new Uint8Array(4096).fill(0xff);
     const fresh = new Schematic();
     fresh.addBoard(boardId, 160, 60);
     applyDoc(fresh, NEW_SKETCH_TEMPLATE);
-  }, [applyDoc, boardId]);
+  }, [applyDoc, boardId, setOpenProject]);
 
   const onProjectSaveAs = useCallback(() => {
     const name = window.prompt('Save project as:', openProject.current ?? 'project-1');
     if (!name || !name.trim()) return;
     try {
       store.save({ ...currentProject(), name: name.trim() });
-      openProject.current = name.trim();
+      setOpenProject(name.trim());
       setProjects(store.list());
     } catch (e) {
       setError(
@@ -350,7 +375,7 @@ export function App() {
         }) - browser storage is full`,
       );
     }
-  }, [store, currentProject]);
+  }, [store, currentProject, setOpenProject]);
 
   // Save overwrites the open project silently (autosave does the same every
   // second); with nothing open yet it degrades to Save as - the first write
@@ -387,11 +412,12 @@ export function App() {
         data,
       );
       setBoardId(data.board);
-      openProject.current = name;
+      setOpenProject(name);
+      setSketchName(inoFileName(name));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [store, applyDoc]);
+  }, [store, applyDoc, setOpenProject]);
 
   // ---- F11: a committed EEPROM page autosaves the open project (no prompt) ----
   const currentProjectRef = useRef(currentProject);
@@ -426,8 +452,9 @@ export function App() {
   const onProjectDelete = useCallback((name: string) => {
     if (!confirmOr(`Delete project "${name}"?`)) return;
     store.remove(name);
+    if (openProject.current === name) setOpenProject(null);
     setProjects(store.list());
-  }, [store]);
+  }, [store, setOpenProject]);
 
   const onExport = useCallback(() => {
     const text = store.exportJson(currentProject());
@@ -441,8 +468,8 @@ export function App() {
   // F13: the sketch alone travels as a plain .ino file (active device only)
   const onSketchSave = useCallback(() => {
     const dev = devices.find((d) => d.id === activeId);
-    downloadText(inoFileName(dev?.name ?? 'sketch'), sketch);
-  }, [devices, activeId, sketch]);
+    downloadText(inoFileName(sketchName.replace(/\.[A-Za-z0-9]+$/, '') || dev?.name || 'sketch'), sketch);
+  }, [devices, activeId, sketch, sketchName]);
 
   const onSketchOpen = useCallback((file: File) => {
     file.text().then((text) => {
@@ -453,6 +480,7 @@ export function App() {
       if (!confirmOr(`Open "${file.name}"? It replaces the sketch on the active device.`)) return;
       sketchesRef.current.set(activeRef.current, text);
       setSketch(text);
+      setSketchName(file.name);
     });
   }, []);
 
@@ -476,7 +504,7 @@ export function App() {
             data,
           );
           setBoardId(data.board);
-          openProject.current = null; // an import is not a storage slot
+          setOpenProject(null); // an import is not a storage slot
         } catch (e) {
           setError(e instanceof Error ? e.message : String(e));
         }
@@ -587,6 +615,7 @@ export function App() {
         onProjectLoad={onProjectLoad}
         onProjectSave={onProjectSave}
         onProjectSaveAs={onProjectSaveAs}
+        projectName={projectLabel}
         onProjectDelete={onProjectDelete}
         onExport={onExport}
         onImportFile={onImportFile}
@@ -642,7 +671,7 @@ export function App() {
         <div className="right-col">
           <div className="editor-panel">
             <div className="panel-title sketch-title">
-              <span>sketch.ino</span>
+              <span title="sketch name - set by opening a .ino, loading a project or picking an example">{sketchName}</span>
               <span className="sketch-file-btns">
                 <button
                   className="mini-btn"

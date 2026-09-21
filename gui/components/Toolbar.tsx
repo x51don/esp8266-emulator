@@ -20,6 +20,8 @@ interface Props {
   onNewProject: () => void;
   onProjectSave: () => void;
   onProjectSaveAs: () => void;
+  /** open project name; null: nothing open, Save will ask for one */
+  projectName: string | null;
   onProjectDelete: (name: string) => void;
   onExport: () => void;
   onImportFile: (file: File) => void;
