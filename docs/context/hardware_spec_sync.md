@@ -426,11 +426,14 @@ asercje toEqual przechodzą).
 sprawdza typ; renderer.ts: rysowanie pod body (labelAt + kolor C.silk);
 ComponentDialog: input Label, Apply aktywny zawsze; examples.ts: helpery
 dostają opcjonalny label; autowire.ts: PlannedPart.label? + mapy tokenów.
-Testy: tests/schematic.test.ts (round-trip/odrzucenie), tests/autowire.test.ts
-(4 nowe: alias-led, alias-button, literał-bez-etykiety, moduł dht).
+Testy: tests/schematic.test.ts (3 nowe) + tests/autowire.test.ts (4 nowe).
+**Status: DONE** (commit db3a5a3; 560 testów na zielono). Deviacja: dialog otwiera się
+dla każdego typu także bez parametrów (kiedyś Apply był tam martwy) - aby dało
+się nadać etykietę dowolnemu elementowi.
 
 ---
 # Dziennik zmian implementacji
+- 2026-09-19 F3.2: etykiety komponentów pod symbolem (dialog Label, round-trip, walidacja) + Auto-wire podpisuje części nazwami stałych/zmiennych ze szkicu; 7 nowych testów, 560 zielone. commit db3a5a3
 
 (format: data | komponent | test red -> zielony | uwagi)
 
