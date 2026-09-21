@@ -106,6 +106,23 @@ body {
   color: var(--dim);
 }
 
+.mini-btn-on {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.http-frame-wrap {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.http-frame {
+  flex: 1;
+  border: 0;
+  background: #fff;
+}
+
 .toolbar-sep {
   width: 1px;
   height: 20px;

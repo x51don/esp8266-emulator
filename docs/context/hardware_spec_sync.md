@@ -432,7 +432,29 @@ dla każdego typu także bez parametrów (kiedyś Apply był tam martwy) - aby d
 się nadać etykietę dowolnemu elementowi.
 
 ---
+# F3.3 Przeglądarka panelu HTTP: pełny webserver szkicu (życzenie użytkownika 2026-09-19)
+
+**Spec.** Dotąd HTTP-odpowiedzi szkicu dało się tylko wywoływać (GET/POST z
+formularza panelu) - serwer WebServer szkiców roletowych (linki /UP, /STOP,
+/TARGET?value=X, formularze) nie miał jak "otworzyć". Panel HTTP dostaje
+widok Page: odpowiedź z ciałem HTML renderowana w iframe (srcDoc,
+sandbox="allow-same-origin" - bez skryptów, zero XSS w aplikację); klik w
+<base href>-zględny link i submit <form> idą przez te same co dotąd
+wywołania LAN (każdy host wirtualnej LAN odpowiada, F10). Historia wstecz w
+pamięci sesji. Log (dotychczasowy widok) zostaje.
+
+**Status: DONE** (2026-09-19; 569 testów). Sandbox iframe: brak skryptów
+ze strony szkicu (brak JS w roledze), klik i submit wiringuje rodzic.
+
+**Kod.** gui/webview.ts (czyste, testowalne): resolveHref (base+href ->
+absolutny http(s) albo null dla javascript:/mailto:/#frag), looksHtml
+(detekcja po ciele), formRequest (method/action/pola -> {method,url,body},
+www-form-urlencoded). HttpPanel: toggle Log|Page, iframe + podsłuch
+click/submit wdokumencie srcDoc, wstecz. Testy: tests/webview.test.ts.
+
+---
 # Dziennik zmian implementacji
+- 2026-09-19 F3.3: widok Page w panelu HTTP - HTML serwera szkicu (rolema) renderowany w iframe sandbox, linki i formularze nawigują przez LAN; gui/webview.ts + 9 testów; 569 zielone.
 - 2026-09-19 F3.2: etykiety komponentów pod symbolem (dialog Label, round-trip, walidacja) + Auto-wire podpisuje części nazwami stałych/zmiennych ze szkicu; 7 nowych testów, 560 zielone. commit db3a5a3
 
 (format: data | komponent | test red -> zielony | uwagi)
