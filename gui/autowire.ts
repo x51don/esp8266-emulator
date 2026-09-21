@@ -16,9 +16,13 @@ import {
 } from './examples';
 
 export type PlannedPart =
-  | { kind: 'led' | 'button' | 'pot' | 'dht' | 'servo' | 'neopixel'; pin: string }
-  | { kind: 'hcsr'; trig: string; echo: string }
+  | { kind: 'led' | 'button' | 'pot' | 'dht' | 'servo' | 'neopixel'; pin: string; label?: string }
+  | { kind: 'hcsr'; trig: string; echo: string; label?: string }
   | { kind: 'oled'; sda: string; scl: string };
+
+/** F3.2: the call-site identifier behind a resolved pin names the part. */
+const isIdent = (t: string | undefined): t is string =>
+  t !== undefined && /^[A-Za-z_]\w*$/.test(t) && !/^D[0-8]$/.test(t) && t !== 'A0';
 
 const GPIO_TO_SILK: Record<number, string> = {};
 for (const [name, gpio] of Object.entries(D_PIN_TO_GPIO)) GPIO_TO_SILK[gpio] = name;
@@ -69,12 +73,12 @@ export function planFromSketch(text: string): PlannedPart[] {
   // module APIs first: their pins are then spoken for
   for (const t of pinsOf(src, 'dhtRead(?:Temperature|Humidity)')) {
     const p = pin(t);
-    if (p && !claimed.has(p)) { plan.push({ kind: 'dht', pin: p }); claimed.add(p); }
+    if (p && !claimed.has(p)) { plan.push({ kind: 'dht', pin: p, ...(isIdent(t) && { label: t }) }); claimed.add(p); }
   }
   for (const fn of ['servoAttach', 'servoWrite', 'servoRead']) {
     for (const t of pinsOf(src, fn)) {
       const p = pin(t);
-      if (p && !claimed.has(p)) { plan.push({ kind: 'servo', pin: p }); claimed.add(p); }
+      if (p && !claimed.has(p)) { plan.push({ kind: 'servo', pin: p, ...(isIdent(t) && { label: t }) }); claimed.add(p); }
     }
   }
   const npPins = [
@@ -83,13 +87,13 @@ export function planFromSketch(text: string): PlannedPart[] {
   ];
   for (const t of npPins) {
     const p = pin(t);
-    if (p && !claimed.has(p)) { plan.push({ kind: 'neopixel', pin: p }); claimed.add(p); }
+    if (p && !claimed.has(p)) { plan.push({ kind: 'neopixel', pin: p, ...(isIdent(t) && { label: t }) }); claimed.add(p); }
   }
   for (const m of src.matchAll(/hcsrSetup\s*\(\s*([A-Za-z0-9_]+)\s*,\s*([A-Za-z0-9_]+)/g)) {
     const trig = pin(m[1]);
     const echo = pin(m[2]);
     if (trig && echo && !claimed.has(trig) && !claimed.has(echo)) {
-      plan.push({ kind: 'hcsr', trig, echo });
+      plan.push({ kind: 'hcsr', trig, echo, ...(isIdent(m[1]) && { label: m[1] }) });
       claimed.add(trig);
       claimed.add(echo);
     }
@@ -100,23 +104,27 @@ export function planFromSketch(text: string): PlannedPart[] {
     claimed.add('D2');
   }
 
-  // single-pin parts: writes are outputs, reads are buttons
-  const outputs = new Set<string>();
-  const inputs = new Set<string>();
+  // single-pin parts: writes are outputs, reads are buttons. The first
+  // identifier token seen for a pin becomes its label (F3.2).
+  const outputs = new Map<string, string | undefined>();
+  const inputs = new Map<string, string | undefined>();
+  const remember = (m: Map<string, string | undefined>, p: string, t?: string) => {
+    if (!m.has(p) || (m.get(p) === undefined && isIdent(t))) m.set(p, isIdent(t) ? t : undefined);
+  };
   for (const fn of ['digitalWrite', 'analogWrite', 'tone']) {
     for (const t of pinsOf(src, fn)) {
       const p = pin(t);
-      if (p && p !== 'A0') outputs.add(p);
+      if (p && p !== 'A0') remember(outputs, p, t);
     }
   }
   for (const t of pinsOf(src, 'digitalRead')) {
     const p = pin(t);
-    if (p && p !== 'A0') inputs.add(p);
+    if (p && p !== 'A0') remember(inputs, p, t);
   }
   if (/\banalogRead\s*\(/.test(src)) plan.push({ kind: 'pot', pin: 'A0' });
 
-  for (const p of outputs) if (!claimed.has(p)) plan.push({ kind: 'led', pin: p });
-  for (const p of inputs) if (!claimed.has(p) && !outputs.has(p)) plan.push({ kind: 'button', pin: p });
+  for (const [p, label] of outputs) if (!claimed.has(p)) plan.push({ kind: 'led', pin: p, ...(label && { label }) });
+  for (const [p, label] of inputs) if (!claimed.has(p) && !outputs.has(p)) plan.push({ kind: 'button', pin: p, ...(label && { label }) });
   return plan;
 }
 
@@ -127,19 +135,19 @@ export function buildFromPlan(plan: PlannedPart[], boardId: string): Schematic {
   const board = sc.boardComponent()!;
   for (const part of plan) {
     switch (part.kind) {
-      case 'led': addLedChain(sc, part.pin); break;
-      case 'button': addButton(sc, part.pin); break;
-      case 'pot': addPot(sc, part.pin); break;
-      case 'dht': addDht(sc, part.pin); break;
+      case 'led': addLedChain(sc, part.pin, part.label); break;
+      case 'button': addButton(sc, part.pin, part.label); break;
+      case 'pot': addPot(sc, part.pin, 200, part.label); break;
+      case 'dht': addDht(sc, part.pin, part.label); break;
       case 'neopixel': {
-        const m = sideModule(sc, 'neopixel', part.pin, 220, { count: 8 });
+        const m = sideModule(sc, 'neopixel', part.pin, 220, { count: 8 }, part.label);
         wire(sc, { comp: m.comp.id, pin: 'din' }, { comp: board.id, pin: part.pin });
         wire(sc, { comp: m.comp.id, pin: 'vcc' }, { comp: board.id, pin: '3V3' });
         wire(sc, { comp: m.comp.id, pin: 'gnd' }, { comp: board.id, pin: 'GND' });
         break;
       }
       case 'servo': {
-        const m = sideModule(sc, 'servo', part.pin, 220, {});
+        const m = sideModule(sc, 'servo', part.pin, 220, {}, part.label);
         wire(sc, { comp: m.comp.id, pin: 'sig' }, { comp: board.id, pin: part.pin });
         wire(sc, { comp: m.comp.id, pin: 'vcc' }, { comp: board.id, pin: '3V3' });
         wire(sc, { comp: m.comp.id, pin: 'gnd' }, { comp: board.id, pin: 'GND' });
@@ -148,6 +156,7 @@ export function buildFromPlan(plan: PlannedPart[], boardId: string): Schematic {
       case 'hcsr': {
         const p = pinWorld(sc, part.echo);
         const h = sc.add('hcsr', p.x + p.dir * 240, p.y - 40, { cm: 20 });
+        if (part.label) h.label = part.label;
         wire(sc, { comp: h.id, pin: 'echo' }, { comp: board.id, pin: part.echo });
         wire(sc, { comp: h.id, pin: 'trig' }, { comp: board.id, pin: part.trig });
         wire(sc, { comp: h.id, pin: 'vcc' }, { comp: board.id, pin: '3V3' });

@@ -353,6 +353,12 @@ function drawComponent(ctx: CanvasRenderingContext2D, s: RenderScene, c: PlacedC
   else if (c.type === 'neopixel') drawNeopixel(ctx, s, c, body);
   else drawBox(ctx, s, body, c.type, C.body);
 
+  // user caption under the body (board included); value/status labels sit above
+  if (c.label) {
+    const pb = s.viewport.worldToScreen(body.x + body.w / 2, body.y + body.h);
+    labelAt(ctx, s, c.label, { x: pb.x, y: pb.y + 14 }, C.silk);
+  }
+
   if (s.selection.has(c.id)) {
     ctx.strokeStyle = C.select;
     ctx.setLineDash([5, 4]);
@@ -988,8 +994,8 @@ function roundRect(
   ctx.closePath();
 }
 
-function labelAt(ctx: CanvasRenderingContext2D, s: RenderScene, text: string, at: Pt): void {
-  ctx.fillStyle = C.text;
+function labelAt(ctx: CanvasRenderingContext2D, s: RenderScene, text: string, at: Pt, color = C.text): void {
+  ctx.fillStyle = color;
   ctx.font = `${Math.max(9, Math.min(13, 10 * s.viewport.zoom))}px ui-monospace, monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'bottom';

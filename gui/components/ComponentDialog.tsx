@@ -78,11 +78,13 @@ function parseField(f: Field, raw: string, current: unknown): unknown {
 interface Props {
   comp: PlacedComponent;
   onClose: () => void;
-  onApply: (params: Record<string, unknown>) => void;
+  /** params holds only changed electrical fields; label is the caption ('' clears) */
+  onApply: (params: Record<string, unknown>, label: string) => void;
 }
 
 export function ComponentDialog({ comp, onClose, onApply }: Props) {
   const fields = FIELDS[comp.type] ?? [];
+  const [label, setLabel] = useState(() => comp.label ?? '');
   const [vals, setVals] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       fields.map((f) => {
@@ -101,7 +103,7 @@ export function ComponentDialog({ comp, onClose, onApply }: Props) {
       const v = parseField(f, vals[f.key] ?? '', comp.params[f.key]);
       if (v !== comp.params[f.key]) out[f.key] = v;
     }
-    onApply(out);
+    onApply(out, label.trim());
   };
 
   return (
@@ -111,6 +113,16 @@ export function ComponentDialog({ comp, onClose, onApply }: Props) {
           {comp.type} <span className="dialog-id">{comp.id}</span>
           <button className="dialog-x" onClick={onClose} aria-label="Close">x</button>
         </div>
+        <label className="dialog-row">
+          <span>Label</span>
+          <input
+            type="text"
+            value={label}
+            placeholder="caption under the part"
+            onChange={(e) => setLabel(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') apply(); }}
+          />
+        </label>
         {fields.length === 0 && (
           <div className="dialog-note">This part has no adjustable parameters.</div>
         )}
@@ -142,7 +154,7 @@ export function ComponentDialog({ comp, onClose, onApply }: Props) {
         ))}
         <div className="dialog-actions">
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn btn-run" onClick={apply} disabled={fields.length === 0}>
+          <button className="btn btn-run" onClick={apply}>
             Apply
           </button>
         </div>

@@ -131,3 +131,50 @@ describe('buildFromPlan', () => {
     expect(comps[0]!.type).toBe('board');
   });
 });
+
+describe('autowire labels (F3.2)', () => {
+  it('a #define-named output names the LED', () => {
+    const plan = planFromSketch(`
+      #define LED_PIN D4
+      void loop() { digitalWrite(LED_PIN, HIGH); }
+    `);
+    expect(plan).toEqual([{ kind: 'led', pin: 'D4', label: 'LED_PIN' }]);
+  });
+
+  it('a const-named input names the button, literals stay anonymous', () => {
+    const plan = planFromSketch(`
+      const int buttonPin = D3;
+      void loop() { digitalRead(buttonPin); digitalWrite(D4, HIGH); }
+    `);
+    const led = plan.find((p) => at(p) === 'D4')!;
+    const btn = plan.find((p) => at(p) === 'D3')!;
+    expect((btn as { label?: string }).label).toBe('buttonPin');
+    expect((led as { label?: string }).label).toBeUndefined();
+    expect('label' in led).toBe(false);
+  });
+
+  it('a named DHT read names the module', () => {
+    const plan = planFromSketch(`
+      #define DHT_PIN D6
+      void loop() { dhtReadTemperature(DHT_PIN); }
+    `);
+    expect(plan).toEqual([{ kind: 'dht', pin: 'D6', label: 'DHT_PIN' }]);
+  });
+
+  it('buildFromPlan puts the label on the functional part, not its resistor', () => {
+    const sc = buildFromPlan(
+      planFromSketch(`
+        const int KEY = D3;
+        #define LED_PIN D4
+        void loop() { digitalRead(KEY); digitalWrite(LED_PIN, HIGH); }
+      `),
+      'wemos-d1-mini',
+    );
+    const led = [...sc.components.values()].find((c) => c.type === 'led')!;
+    const btn = [...sc.components.values()].find((c) => c.type === 'button')!;
+    const resistors = [...sc.components.values()].filter((c) => c.type === 'resistor');
+    expect(led.label).toBe('LED_PIN');
+    expect(btn.label).toBe('KEY');
+    for (const r of resistors) expect(r.label).toBeUndefined();
+  });
+});

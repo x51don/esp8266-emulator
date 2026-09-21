@@ -336,3 +336,33 @@ describe('document version signal (P1.3)', () => {
     void w;
   });
 });
+
+describe('component labels (F3.2)', () => {
+  it('a label round-trips through toJSON/fromJSON', () => {
+    const sc = new Schematic();
+    sc.addBoard('wemos-d1-mini', 0, 0);
+    const led = sc.add('led', 100, 0, { forwardV: 2 });
+    sc.setLabel(led.id, 'STATUS');
+    const back = Schematic.fromJSON(sc.toJSON());
+    expect(back.component(led.id)!.label).toBe('STATUS');
+  });
+
+  it('a non-string label is a malformed document', () => {
+    const sc = new Schematic();
+    sc.addBoard('wemos-d1-mini', 0, 0);
+    const doc = JSON.parse(sc.toJSON());
+    doc.comps[0].label = { evil: true };
+    expect(() => Schematic.fromJSON(JSON.stringify(doc))).toThrow(/malformed/);
+  });
+
+  it('setLabel("") clears the label; missing ids are a no-op', () => {
+    const sc = new Schematic();
+    sc.addBoard('wemos-d1-mini', 0, 0);
+    const b = sc.add('button', 100, 0, {});
+    sc.setLabel(b.id, 'KEY');
+    expect(sc.component(b.id)!.label).toBe('KEY');
+    sc.setLabel(b.id, '');
+    expect(sc.component(b.id)!.label).toBeUndefined();
+    sc.setLabel('nope', 'x'); // must not throw
+  });
+});

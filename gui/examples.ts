@@ -54,20 +54,22 @@ export function pinWorld(sc: Schematic, pin: string): Pt & { dir: number } {
 }
 
 /** pin -> resistor -> LED -> GND, parts laid out outside the board edge. */
-export function addLedChain(sc: Schematic, pin: string): void {
+export function addLedChain(sc: Schematic, pin: string, label?: string): void {
   const board = sc.boardComponent()!;
   const p = pinWorld(sc, pin);
   const r = sc.add('resistor', p.x + p.dir * 160, p.y, { resistance: 220 });
   const led = sc.add('led', p.x + p.dir * 280, p.y, { forwardV: 2 });
+  if (label) led.label = label; // the caption names the LED, not its resistor
   wire(sc, { comp: board.id, pin }, { comp: r.id, pin: 'p1' });
   wire(sc, { comp: r.id, pin: 'p2' }, { comp: led.id, pin: 'a' });
   wire(sc, { comp: led.id, pin: 'k' }, { comp: board.id, pin: 'GND' });
 }
 
-export function addButton(sc: Schematic, pin: string): void {
+export function addButton(sc: Schematic, pin: string, label?: string): void {
   const board = sc.boardComponent()!;
   const p = pinWorld(sc, pin);
   const b = sc.add('button', p.x + p.dir * 160, p.y, { bounce: 1 });
+  if (label) b.label = label;
   wire(sc, { comp: board.id, pin }, { comp: b.id, pin: 'p1' });
   wire(sc, { comp: b.id, pin: 'p2' }, { comp: board.id, pin: 'GND' });
 }
@@ -76,24 +78,27 @@ export function addButton(sc: Schematic, pin: string): void {
 export function sideModule(
   sc: Schematic, type: string, pin: string, dist: number,
   params: Record<string, unknown> = {},
+  label?: string,
 ): { comp: PlacedComponent; at: (localY: number) => Pt } {
   const p = pinWorld(sc, pin);
   const comp = sc.add(type, p.x + p.dir * dist, p.y - 20, params);
+  if (label) comp.label = label;
   return { comp, at: (localY: number) => ({ x: comp.x, y: comp.y + localY }) };
 }
 
-export function addPot(sc: Schematic, pin: string, dist = 200): void {
+export function addPot(sc: Schematic, pin: string, dist = 200, label?: string): void {
   const board = sc.boardComponent()!;
   const p = pinWorld(sc, pin);
   const pot = sc.add('pot', p.x + p.dir * dist, p.y + 40, { ratio: 0.5 });
+  if (label) pot.label = label;
   wire(sc, { comp: pot.id, pin: 'w' }, { comp: board.id, pin });
   wire(sc, { comp: pot.id, pin: 'p1' }, { comp: board.id, pin: '3V3' });
   wire(sc, { comp: pot.id, pin: 'p2' }, { comp: board.id, pin: 'GND' });
 }
 
-export function addDht(sc: Schematic, pin: string): void {
+export function addDht(sc: Schematic, pin: string, label?: string): void {
   const board = sc.boardComponent()!;
-  const m = sideModule(sc, 'dht', pin, 200, { model: 'DHT22', tempC: 23.5, humPct: 61 });
+  const m = sideModule(sc, 'dht', pin, 200, { model: 'DHT22', tempC: 23.5, humPct: 61 }, label);
   wire(sc, { comp: m.comp.id, pin: 'data' }, { comp: board.id, pin });
   wire(sc, { comp: m.comp.id, pin: 'vcc' }, { comp: board.id, pin: '3V3' });
   wire(sc, { comp: m.comp.id, pin: 'gnd' }, { comp: board.id, pin: 'GND' });

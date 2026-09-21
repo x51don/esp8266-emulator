@@ -405,6 +405,31 @@ Testy: tests/motor.test.ts (7).
 
 ---
 
+# F3.2 Etykiety komponentów + autonazewnictwo Auto-wire (życzenie użytkownika 2026-09-19)
+
+**Spec.** Każdy komponent schematu może mieć `label` (pole dokumentu, nie
+parametr elektryczny - do netlisty nie trafia). Rysowana pod obrysem
+komponentu (podpis przycisku, diody...); edycja: dwuklik / klawisz P ->
+dialog właściwości ma pole "Label" dla KAŻDEgo typu (dawniej typy bez
+parametrów nie dawały się otworzyć sensownie). Round-trip przez
+toJSON/fromJSON; walidator dokumentu odrzuca nie-łańcuchowe label.
+
+**Auto-wire.** planFromSketch już rozwiązuje aliasy (#define, const int) -
+teraz zapamiętuje też token, z którego rozwiązano pin. Jeśli token jest
+identyfikatorem (nie literałem D4/2/A0), trafia jako `label` do części
+planu, a buildFromPlan na część funkcjonalną (LED w łańcuchu, nie rezystor;
+przycisk; DHT; pot; servo/neopixel/hcsr). Literały -> brak etykiety.
+Zachowana kompatybilność: bez etykiety pole `label` nie istnieje (stare
+asercje toEqual przechodzą).
+
+**Kod.** schematic.ts: PlacedComponent.label?, setLabel()+touch, isComp
+sprawdza typ; renderer.ts: rysowanie pod body (labelAt + kolor C.silk);
+ComponentDialog: input Label, Apply aktywny zawsze; examples.ts: helpery
+dostają opcjonalny label; autowire.ts: PlannedPart.label? + mapy tokenów.
+Testy: tests/schematic.test.ts (round-trip/odrzucenie), tests/autowire.test.ts
+(4 nowe: alias-led, alias-button, literał-bez-etykiety, moduł dht).
+
+---
 # Dziennik zmian implementacji
 
 (format: data | komponent | test red -> zielony | uwagi)

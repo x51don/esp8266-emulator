@@ -27,6 +27,8 @@ export interface PlacedComponent {
   rot: Rot;
   /** mirror the symbol horizontally about the body centre (before rot) */
   flip?: boolean;
+  /** user caption drawn under the body; never enters the netlist */
+  label?: string;
   params: Record<string, unknown>;
 }
 
@@ -306,6 +308,16 @@ export class Schematic {
 
   component(id: string): PlacedComponent | undefined {
     return this.components.get(id);
+  }
+
+  /** Set/clear the user caption of a component ('' clears). Unknown id: no-op. */
+  setLabel(id: string, label: string): void {
+    const c = this.components.get(id);
+    if (!c) return;
+    const trimmed = label.trim();
+    if (trimmed) c.label = trimmed;
+    else delete c.label;
+    this.touch();
   }
 
   boardComponent(): PlacedComponent | undefined {
@@ -695,7 +707,8 @@ function isComp(v: unknown): v is PlacedComponent {
     isNum(v.y) &&
     isRot(v.rot) &&
     isObj(v.params) &&
-    (v.flip === undefined || typeof v.flip === 'boolean')
+    (v.flip === undefined || typeof v.flip === 'boolean') &&
+    (v.label === undefined || typeof v.label === 'string')
   );
 }
 

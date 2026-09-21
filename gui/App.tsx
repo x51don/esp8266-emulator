@@ -741,14 +741,15 @@ export function App() {
           <ComponentDialog
             comp={comp}
             onClose={() => setConfigureId(null)}
-            onApply={(params) => {
+            onApply={(params, label) => {
               const entries = Object.entries(params);
               for (const [k, v] of entries) schematic.setParam(comp.id, k, v);
+              if (label !== (comp.label ?? '')) schematic.setLabel(comp.id, label);
               const board = params.board;
               if (comp.type === 'board' && typeof board === 'string') {
                 // keep the toolbar selector and the machine in sync
                 setBoardId(board);
-              } else if (entries.length > 0) {
+              } else if (entries.length > 0 || label !== (comp.label ?? '')) {
                 onEdit();
               }
               setConfigureId(null);
