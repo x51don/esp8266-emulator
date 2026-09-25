@@ -613,7 +613,38 @@ sprzetu - emulator sam z siebie zaden stan nie zabrania (zwarcie nadal plynie);
 brak okna dialogowego do definiowania regul, zostaje konsola `__emu`.
 
 ---
+# N6 Bench wielomaszynowy (naprawa 6 z 6, commit F6)
+
+**Spec.** Testy byly jednomechanizmowe: latencja osobno, WiFi osobno, zwarcie
+osobno. Zadne z nich nie odpowiadalo na pytanie, czy cztery czipy naraz - hub,
+klient i dwóch sąsiadow, jeden wolny, jeden nieosiagalny - utrzymuja spojne
+liczniki i zegary, i czy ktorys z nich nie wiesza interpretera.
+
+**Status: DONE** (2026-09-25; 626 testow).
+
+**Kod.** `tests/multi-machine.test.ts` (9 testow, bez zmian w rdzeniu): trzy
+serwery + klient, jeden `HTTPClient` i trzy GET-y na iteracje petli, log
+`kod,kod,kod,millis`. Bench jest napedzany zegarem klienta (`step()` rusza
+tylko jego), wiec kolega dostaje tyle czasu, ile sam kosztowal - i wowczas
+"daden czip nie moze wyprzedzic tego, na ktorego czekal" jest twierdzeniem,
+ktore da sie sprawdzic. Aserty: rowny odstep rundy (400 ms latencji + wypalony
+timeout + 20 ms szkicu), hub i wolny kolega obsluguja, nieosiagalny nigdy nie
+jest w to wlaczony ale nadal sie starzeje, zegar wolnego kolegi = lacznie czas
+laczny, brak faultow i postep w kazdym plastrze czasu, dwa identyczne przebiegi
+daja identyczny log i identyczne zegary, probe F5 na pinach silnika zostaje
+czysty, a po naprawieniu kolegi w polowie scenariusza zostaje on obsluzony bez
+rebootu. Ostatni test tyka wszystkie cztery maszyny naraz (model GUI) - to
+sciezka, ktora przy re-entrancji `pump()` moglaby dac rekurencje; nie daje.
+
+Weryfikacja, ze bench gryzie: mutacja `elapsed = flight` -> `0` wywala 6 z 9
+testow, mutacja ignorujaca `unreachable` wywala 6 z 9.
+
+Odstepstwa: bench to test, nie funkcja GUI; wielomaszynowosc w GUI istnieje
+osobno (zakladki urzadzen) i nie jest tu objeta asercjami.
+
+---
 # Dziennik zmian implementacji
+- 2026-09-25 | N6 bench wielomaszynowy (commit F6) | tests/multi-machine.test.ts 9x green; suite 626/626 | hub + klient + 2 poszkodowanych kolegow; bench kreci zegar klienta, wiec zegar kolegi = czas, ktory kosztowal; odstep rundy dokladnie 400+1500+20 ms; dwa przebiegi identyczne; tykanie wszystkich naraz bez re-entrancji; mutacje rdzenia wywoluja 6/9 bledow.
 - 2026-09-25 | N5 probe na stany zakazane (commit F5) | tests/invariants.test.ts 11x red -> green; suite 617/617 | `addPinInvariant({never,label})` sprawdzany w `digitalWrite` i po kazdym `resolveCircuit()`; wpis raz na epizod (timestamp + stan pinow), kasowany przy reboocie; `invariantStrict` rzuca i `advance()` przepuszcza blad dalej; licznik w toolbarze.
 - 2026-09-25 | N4 32-bitowy uplyw czasu (commit F4) | tests/millis-wrap.test.ts 10x red -> green; suite 606/606 | `millis`/`micros` maskowane `% 2**32` tylko na granicy `env()` (zegar wewnetrznie pelnym µs); `Clock.setNow` + `setUptimeUs` = start przy granicy zamiast czekania 49.7 dnia; `intKindOf`/`stampType`/`wrapInt` daja deklarowanym typom ich sprzetowa szerokosc (bez tego `unsigned long` nie miescil millis()); arytmetyka bezznakovowa zawija sie, `>>` logiczny; parametry skalarnie przez wartosc.
 - 2026-09-25 | N3 znikajacy punkt dostepowy (commit F3) | tests/wifi-down.test.ts 10x red -> green; suite 596/596 | `setWifiDown` to stan srodowiska (przezywa run/restart); `staUp()` jedynym source of truth lacza; `HostResult.again` = parkuj i wywolaj ponownie (jedno `env.call`); `waitForConnectResult` zwraca 6 po wlasnym timeout zamiast wieszac interpreter; przy awarii czip nie obsluguje LAN.

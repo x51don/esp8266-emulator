@@ -160,6 +160,11 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
   A host that was never registered still fails immediately rather than
   hanging to the timeout like real hardware - use `setPeerUnreachable` for
   that case.
+  Each chip owns its clock: a machine ages when the harness advances it or
+  when another machine blocks on it, and by nothing else. Peers the harness
+  does not tick fall behind on purpose (an unreachable one keeps running - it
+  is deaf, not off); `tests/multi-machine.test.ts` is the reference bench that
+  pins this down for four machines at once.
 - Association is a fixed 1.5 s and there is no signal model (no RSSI, no
   scan, no wrong-password network), but the access point can be taken away:
   `setWifiDown(true)` drops the link at once - `isConnected()`/`status()`/
