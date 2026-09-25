@@ -1,0 +1,10 @@
+{
+  "roleta_LoLin_v20.ino": {
+    "source": "../Rolety/roleta_LoLin_v20.ino",
+    "sha256": "5b83a5e3edadfdcae80f79af4fcf7b6995ea45944eaf8ab5392e644272834f23"
+  },
+  "roleta_LoLin_WeMos_v19.7.6_k1_sm.ino": {
+    "source": "../Rolety/roleta_LoLin_WeMos_v19.7.6_k1_sm.ino",
+    "sha256": "8ed35e3acab3cbad036a9d1ea4e9095b544687156b4424020175a49822d8fe8b"
+  }
+}

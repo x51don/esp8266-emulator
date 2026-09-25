@@ -38,9 +38,17 @@
 //    v19 re-fired both HTTP calls every loop iteration while sitting at the top position.
 // 11 LED light-cycle at bottom position applies on change instead of every loop iteration
 //    (v19 re-sent the whole NeoPixel frame every ~10 ms while idle at 0).
-// 12 Dead code removed: radar/motion sensor (never attached), isItNight / NIGHT_CLOSE
-//    (never called), moveing_correction, /STRIP_HEX keeps its v19 side effects but stays
-//    a stub.
+// 12 Dead code removed: radar/motion sensor (never attached), isItNight, moveing_correction,
+//    /STRIP_HEX keeps its v19 side effects but stays a stub. EXCEPTION: _NIGHT_CLOSE is
+//    deliberately RE-ENABLED for PRZEDPOKOJ only (tick_foto closes the roller at night and
+//    clears auto_mode). v19 had the code but never called it - this is new behaviour.
+// 13 loop() WiFi reconnect is non-blocking (WiFi.reconnect() only, retried every
+//    _WIFI_RETRY_MS). v19 called WiFi.waitForConnectResult() there; with the tick moved to
+//    loop() that call would freeze position counting and leave a relay latched ON.
+// 14 pump() catches up missed 0.5 s ticks and runs the relay machine inside the fan-out
+//    gaps (peer_gap_wait), so blocking peer calls cannot desync the counter.
+// 15 Button lockout after a relay click restored (v19:700); mDNS retried in loop() when
+//    WiFi only appears after setup(); button IRQ flags cleared under noInterrupts().
 //------------------------------------------------------------------------------------------------------------------
 
 #include <ESP8266WiFi.h>
@@ -275,6 +283,7 @@ const char* mySsid = _LOCAL_AP;                           // name of local AP
 #define _PEER_GAP_MS 1000                                 // pause between peer commands
 #define _HALFSECOND_MS 500                                // position tick
 #define _WIFI_BOOT_WAIT_MS 30000                          // max time setup() waits for WiFi before continuing (relays are already OFF)
+#define _WIFI_RETRY_MS 5000                               // min pause between WiFi.reconnect() attempts in loop()
 
 //----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -335,6 +344,8 @@ ESP8266WebServer server(80);
 int8_t relay_applied = 0;                                 // currently energized: -1 down, 0 none, 1 up
 bool   relay_gap = false;                                 // true while both relays are OFF waiting for the gap
 uint32_t relay_gap_start = 0;
+bool   mdns_ok = false;                                   // MDNS.begin result; retried in loop() when WiFi arrives late
+uint32_t t_halfsecond = 0;                                // 0.5 s tick clock (pumped from loop AND from blocking handlers)
 
 int dir_from_pos() {                                      // single source of truth for the wanted direction (same formula as the 0.5 s tick in v19)
   if ((curent_pos > 0) && (curent_pos > target_pos)) return -1;
@@ -353,6 +364,7 @@ void relay_apply() {
   int want = dir_from_pos();                              // fresh, derived from target - not the tick-lagged "moveing"
   if (!relay_gap) {
     if (want == relay_applied) return;
+    if (buttons_count <= _BUTTONS_DELAY) buttons_count = _BUTTONS_DELAY;   // v19:700 - button lockout on relay click (contact noise)
     if (relay_applied ==  1) digitalWrite(_UP_RELAY_PIN   , _MY_OFF);
     if (relay_applied == -1) digitalWrite(_DOWN_RELAY_PIN , _MY_OFF);
     relay_applied = 0;
@@ -535,6 +547,35 @@ void tick_halfsecond() {
 }
 
 //------------------------------------------------------------------------------------------------------------------
+// pump() = catch-up 0.5 s ticks + relay safety machine. Called from loop() AND from the
+// blocking fan-out handlers (peer_gap_wait), so a slow/unreachable peer can never freeze
+// the open-loop counter while the motor runs (v20 pre-fix: /TARGET_ALL lost up to 15 s
+// of counting = ~29% of the stroke) nor leave a relay latched ON past the target.
+
+void pump() {
+  uint32_t due = (uint32_t)(millis() - t_halfsecond);
+  if (due >= (uint32_t)_HALFSECOND_MS) {
+    uint32_t ticks = due / (uint32_t)_HALFSECOND_MS;
+    if (ticks > (uint32_t)(2 * _MAX_COUNTER)) {             // cap: never compensate more than two full strokes
+      t_halfsecond = millis();                              // drop the backlog, stay in sync
+      ticks = 0;
+    } else {
+      t_halfsecond += ticks * (uint32_t)_HALFSECOND_MS;
+    }
+    while (ticks > 0) { tick_halfsecond(); ticks--; }
+  }
+  relay_apply();
+}
+
+void peer_gap_wait() {                                      // inter-peer gap that keeps pump() alive (replaces delay(_PEER_GAP_MS))
+  uint32_t t0 = millis();
+  while ((uint32_t)(millis() - t0) < (uint32_t)_PEER_GAP_MS) {
+    delay(10);
+    pump();
+  }
+}
+
+//------------------------------------------------------------------------------------------------------------------
 // _FOTO_SEC automation - same as v19 FOTO_AUTO (minus dead night-close code; PRZEDPOKOJ keeps it under _NIGHT_CLOSE).
 
 void tick_foto() {
@@ -600,7 +641,8 @@ void setup(void) {
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
-  if (MDNS.begin("esp8266")) {
+  mdns_ok = MDNS.begin("esp8266");
+  if (mdns_ok) {
     Serial.println("MDNS responder started");
   }
 
@@ -725,7 +767,7 @@ void setup(void) {
     for (int i = _ROLLERS ; i >= 0 ; i--) {
       if (_WU[i] == -1) continue;                          // empty / not-flashed slot (also skips 158)
       peer_cmd(150 + i, "/RESTART");
-      delay(_PEER_GAP_MS);
+      peer_gap_wait();
     }
     relay_off_all();
     ESP.restart();
@@ -736,13 +778,13 @@ void setup(void) {
     server.send(200, "text/plain", "Wake up procedure started\n");
     if (_WU[2] != -1) {
       peer_cmd(152, "/TARGET?value=" + String(_WU[2]));
-      delay(_PEER_GAP_MS);
+      peer_gap_wait();
     }
     for (int i = _ROLLERS ; i >= 0 ; i--) {
       if (_WU[i] == -1) continue;
       if (i == 2) continue;                                  // 152 already sent first, do not send twice
       peer_cmd(150 + i, "/TARGET?value=" + String(_WU[i]));
-      delay(_PEER_GAP_MS);
+      peer_gap_wait();
     }
     if (_WU[_MY_IP - 150] != -1) {                         // to open itself as a last one
       target_pos = clamp_pct_to_counter(_WU[_MY_IP - 150]);
@@ -772,7 +814,7 @@ void setup(void) {
     for (int i = _ROLLERS ; i >= 0 ; i--) {
       if (_WU[i] == -1) continue;
       peer_cmd(150 + i, "/TARGET?value=" + String(value));
-      delay(_PEER_GAP_MS);
+      peer_gap_wait();
     }
     target_pos = clamp_pct_to_counter(value);
     auto_mode = false;
@@ -856,15 +898,20 @@ void setup(void) {
 
 //------------------------------------------------------------------------------------------------------------------
 
-uint32_t t_halfsecond = 0;
 uint32_t t_foto = 0;
 
 void loop(void) {
 
-  if (!WiFi.isConnected()) {                               // reconnecting wifi
+  static uint32_t wifi_retry_at = 0;
+  if (!WiFi.isConnected() && (int32_t)(millis() - wifi_retry_at) >= 0) {   // reconnecting wifi, NON-BLOCKING
     Serial.println( "Disconnected!" );
-    WiFi.reconnect();
-    WiFi.waitForConnectResult();
+    WiFi.reconnect();                                      // async kick only. NEVER WiFi.waitForConnectResult():
+    wifi_retry_at = millis() + _WIFI_RETRY_MS;             // it froze tick/relay_apply/HTTP for seconds (v19 leftover)
+  }
+
+  if (!mdns_ok && WiFi.isConnected()) {                    // mDNS when the network finally shows up
+    mdns_ok = MDNS.begin("esp8266");
+    if (mdns_ok) Serial.println("MDNS responder started (late)");
   }
 
   //handle webserver (also during OTA - v19 froze the world there)
@@ -876,24 +923,18 @@ void loop(void) {
     delay(10);                                             // Don't Delete or it will stop working
   }
 
-  // consume button interrupts
-  if (up_irq)   { up_irq = false;   press_up();   }
-  if (down_irq) { down_irq = false; press_down(); }
+  // consume button interrupts (flag cleared atomically - a press arriving in between is kept)
+  if (up_irq)   { noInterrupts(); up_irq = false;   interrupts(); press_up();   }
+  if (down_irq) { noInterrupts(); down_irq = false; interrupts(); press_down(); }
 
-  // 0.5 s position tick (was a Ticker ISR in v19)
-  if ((uint32_t)(millis() - t_halfsecond) >= (uint32_t)_HALFSECOND_MS) {
-    t_halfsecond = millis();
-    tick_halfsecond();
-  }
+  // 0.5 s position tick + SAFETY relay state machine, with catch-up (was a Ticker ISR in v19)
+  pump();
 
   // photo automation tick (was a Ticker ISR in v19)
   if ((uint32_t)(millis() - t_foto) >= ((uint32_t)_FOTO_SEC * 1000u)) {
     t_foto = millis();
     tick_foto();
   }
-
-  // SAFETY: relay state machine - the only relay writer
-  relay_apply();
 
   // LED strip behaviour (same rules as v19)
   if ((curent_pos == 1) && (moveing == 1)) { STRIP_COLOR(strip.Color(0, 0, 0)); strip.clear(); }   // Switch light off when going up
