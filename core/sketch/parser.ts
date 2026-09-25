@@ -31,7 +31,15 @@ export interface Comma { kind: 'Comma'; exprs: Expr[]; line: number }
 export type Expr = NumLit | StrLit | CharLit | Ident | Unary | Update | Binary | Logical
   | Cond | Assign | Call | Index | Cast | ArrayLit | Comma;
 
-export interface Declarator { name: string; init: Expr | null; arraySize: number | null }
+export interface Declarator {
+  name: string;
+  init: Expr | null;
+  /**
+   * Bracket pairs of the declarator, outermost first: `int m[2][3]` is
+   * `[2, 3]`, `int m[]` is `[null]` (the count comes from the initializer).
+   */
+  dims: (number | null)[];
+}
 export interface VarDecl {
   kind: 'VarDecl' | 'VarDeclStmt';
   type: string;
@@ -288,10 +296,13 @@ class Parser {
         // `char*` parameters are C strings: model them as String values
         if (isPtr && /(^|\s)char($|\s)/.test(ptype)) ptype = ptype.replace(/\bchar\b/, 'String');
         if (this.isPunct('[')) {
-          // array parameter: `int arr[]` / `int pins[4]` - decays to a pointer
-          this.next();
-          if (this.peek().type === 'num') this.next();
-          this.eatPunct(']');
+          // array parameter: `int arr[]` / `int pins[4]` / `int m[2][3]` -
+          // every dimension decays to a pointer, the shape is not carried
+          do {
+            this.next();
+            if (this.peek().type === 'num') this.next();
+            this.eatPunct(']');
+          } while (this.isPunct('['));
           params.push({ name: pname.value, type: `${ptype}[]`, ...(byRef && { byRef }) });
         } else {
           params.push({ name: pname.value, type: ptype, ...(byRef && { byRef }) });
@@ -327,15 +338,18 @@ class Parser {
         }
         this.eatPunct(')');
       }
-      let arraySize: number | null = null;
-      if (this.isPunct('[')) {
+      // sizes may be #define arithmetic (`int t[_N + 1]`); the preprocessor
+      // has substituted the macros, so what remains must fold to a constant.
+      // More than one bracket pair is a matrix: `int keys[4][3]`.
+      const dims: (number | null)[] = [];
+      while (this.isPunct('[')) {
         this.next();
-        // sizes may be #define arithmetic (`int t[_N + 1]`); the preprocessor
-        // has substituted the macros, so what remains must fold to a constant
-        if (!(this.peek().type === 'num' && this.isPunct(']', 1))) {
-          if (!this.isPunct(']')) arraySize = this.constInt(this.parseAssign());
+        if (this.peek().type === 'num' && this.isPunct(']', 1)) {
+          dims.push(this.next().num!);
+        } else if (this.isPunct(']')) {
+          dims.push(null); // only the first dimension may be left out
         } else {
-          arraySize = this.next().num!;
+          dims.push(this.constInt(this.parseAssign()));
         }
         this.eatPunct(']');
       }
@@ -347,7 +361,7 @@ class Parser {
       } else if (ctorArgs !== null) {
         init = { kind: 'Call', callee: type, args: ctorArgs, line };
       }
-      decls.push({ name: (nameTok as { value: string }).value, init, arraySize });
+      decls.push({ name: (nameTok as { value: string }).value, init, dims });
       if (this.isPunct(',')) { this.next(); continue; }
       break;
     }
@@ -396,7 +410,8 @@ class Parser {
     if (!this.isPunct('}')) {
       do {
         if (this.isPunct('}')) break; // trailing comma
-        elems.push(this.parseAssign());
+        // a nested brace list is a row of a matrix: `int m[2][2] = {{1,2},{3,4}}`
+        elems.push(this.isPunct('{') ? this.parseArrayLit() : this.parseAssign());
       } while (this.isPunct(',') && this.next() !== undefined);
     }
     this.eatPunct('}');

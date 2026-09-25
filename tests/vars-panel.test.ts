@@ -110,6 +110,8 @@ describe('variables panel preferences', () => {
 describe('variable rendering', () => {
   it('the type column says what the sketch wrote', () => {
     expect(varTypeLabel(v('steps', null, { kind: 'array', length: 4 }))).toBe('int[4]');
+    expect(varTypeLabel(v('m', null, { kind: 'array', type: 'int', length: 2, dims: [2, 3] })))
+      .toBe('int[2][3]');
     expect(varTypeLabel({ ...v('LIMIT', 10), isConst: true })).toBe('const int');
     expect(varTypeLabel({ ...v('LIMIT', 10), type: 'const int', isConst: true })).toBe('const int');
     expect(varTypeLabel(v('label', 'x', { kind: 'string', type: 'String' }))).toBe('String');

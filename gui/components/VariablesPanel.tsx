@@ -111,9 +111,12 @@ export function formatVar(v: SketchVar): string {
   return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(6)));
 }
 
-/** The type as the sketch wrote it: `const` put back, array length shown. */
+/** The type as the sketch wrote it: `const` put back, array shape shown. */
 export function varTypeLabel(v: SketchVar): string {
-  const base = v.kind === 'array' ? `${v.type}[${v.length ?? 0}]` : v.type;
+  const shape = v.kind === 'array'
+    ? (v.dims ?? [v.length ?? 0]).map((d) => `[${d}]`).join('')
+    : '';
+  const base = v.kind === 'array' ? v.type + shape : v.type;
   return v.isConst && !/^const\b/.test(base) ? `const ${base}` : base;
 }
 

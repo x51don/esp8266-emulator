@@ -36,6 +36,7 @@ unsigned long last = 0;
 const int LIMIT = 10;
 String label = "roleta";
 int steps[4] = {1, 2, 3, 4};
+int keys[2][3] = {{1, 2, 3}, {4, 5, 6}};
 bool armed = true;
 
 void setup() {
@@ -85,13 +86,16 @@ const open = async (reload = false) => {
 await open();
 let st = JSON.parse(await cdp.eval(PAGE));
 check('tab shows every global by default',
-  JSON.stringify(st.names) === JSON.stringify(['counter', 'last', 'LIMIT', 'label', 'steps', 'armed']),
+  JSON.stringify(st.names) === JSON.stringify(['counter', 'last', 'LIMIT', 'label', 'steps', 'keys', 'armed']),
   st.names.join(','));
 check('types are as written',
-  st.types.join('|') === 'int|unsigned long|const int|String|int[4]|bool',
+  st.types.join('|') === 'int|unsigned long|const int|String|int[4]|int[2][3]|bool',
   st.types.join('|'));
 check('values are live', Number(st.values[0]) >= 1 && st.values[3] === '"roleta"' && st.values[4] === '[1, 2, 3, 4]',
   st.values.join(' '));
+check('a matrix reads as rows and shows its shape',
+  st.values[5] === '[[1,2,3], [4,5,6]]' && st.types[5] === 'int[2][3]',
+  `${st.types[5]} = ${st.values[5]}`);
 
 const before = Number(JSON.parse(await cdp.eval(PAGE)).values[0]);
 await sleep(900);
@@ -102,7 +106,7 @@ check('the list follows the running sketch', after > before, `${before} -> ${aft
 await cdp.eval(`(() => { const r = document.querySelector('.vars-row'); [...r.querySelectorAll('button')].find(b => b.textContent === 'hide').click(); return true; })()`);
 await sleep(400);
 st = JSON.parse(await cdp.eval(PAGE));
-check('hide removes that row', !st.names.includes('counter') && st.names.length === 5, st.names.join(','));
+check('hide removes that row', !st.names.includes('counter') && st.names.length === 6, st.names.join(','));
 check('a hidden list is offered', st.hiddenToggle, String(st.hiddenToggle));
 const stored = await cdp.eval(`localStorage.getItem('esp8266-emu.vars')`);
 check('layout is persisted', !!stored && JSON.parse(stored).hidden.includes('counter'), String(stored));
@@ -110,7 +114,7 @@ check('layout is persisted', !!stored && JSON.parse(stored).hidden.includes('cou
 // reload: the layout must come back
 await open(true);
 st = JSON.parse(await cdp.eval(PAGE));
-check('layout survives a reload', !st.names.includes('counter') && st.names.length === 5, st.names.join(','));
+check('layout survives a reload', !st.names.includes('counter') && st.names.length === 6, st.names.join(','));
 
 // reveal the hidden ones and bring one back
 await cdp.eval(`(() => { document.querySelector('.vars-panel input[type=checkbox]').click(); return true; })()`);
@@ -135,7 +139,7 @@ await cdp.eval(`(() => { [...document.querySelectorAll('.vars-panel .mini-btn')]
 await sleep(300);
 st = JSON.parse(await cdp.eval(PAGE));
 check('reset restores declaration order',
-  JSON.stringify(st.names) === JSON.stringify(['counter', 'last', 'LIMIT', 'label', 'steps', 'armed']),
+  JSON.stringify(st.names) === JSON.stringify(['counter', 'last', 'LIMIT', 'label', 'steps', 'keys', 'armed']),
   st.names.join(','));
 
 const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });

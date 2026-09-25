@@ -122,6 +122,12 @@ describe('element type of the filled-in tail', () => {
       .toEqual(['97', '99', '0', '0']);
   });
 
+  it('a char array with no size takes the literal plus its terminator', () => {
+    expect(out('char t[] = "abc"; println(t[0]); println(t[3]);')).toEqual(['97', '0']);
+    expect(failsWith('char t[] = "abc"; println(t[4]);'))
+      .toMatch(/index 4 out of bounds \(size 4\)/);
+  });
+
   it('a literal that exactly fills the array is legal, one byte more is not', () => {
     expect(out('char t[3] = "abc"; println(t[2]);')).toEqual(['99']);
     expect(failsWith('char t[2] = "abc";')).toMatch(/size 2 but 3/i);

@@ -99,7 +99,7 @@ describe('parse - statements', () => {
   it('parses local arrays with initializer lists', () => {
     const s = fnBody('void f() { int pins[] = {2, 4, 5}; int n = pins[1]; }');
     const a = s[0].decls[0];
-    expect(a.arraySize).toBeNull(); // size deduced
+    expect(a.dims).toEqual([null]); // size deduced
     expect(a.init.kind).toBe('ArrayLit');
     expect(a.init.elems).toHaveLength(3);
     const n = s[1].decls[0];

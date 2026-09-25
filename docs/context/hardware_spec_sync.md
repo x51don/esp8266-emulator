@@ -698,7 +698,35 @@ przy V1, wiec `int steps[4] = {1,2,3,4}` pilnuje, ze pelna lista sie nie
 zmienila).
 
 ---
+# V3 Tablice dwuwymiarowe (commit V3)
+
+**Spec.** V2 zostawil dziure jezykowa: `int m[2][3];` bylo bledem parsowania
+("expected ';' but found '['"), wiec szkic z macierza - matryca klawiszy,
+tablica LED, siatka czujnikow - nie odpalil w emulatorze w ogole.
+
+**Status: DONE** (2026-09-25; 682 testy).
+
+**Kod.** `Declarator.arraySize` zostal `dims: (number | null)[]` - kazda para
+nawiasow to jeden wymiar, `int m[][3]` to `[null, 3]` (pierwszy wymiar wolno
+opuscic, wnetrzowych nie). `parseArrayLit()` przyjmuje zagnieżdżone `{}`,
+parametr funkcji czyta nawiasy petla (`void f(int m[2][3])`), a `initArray()`
+schodzi po wymiarach rekursywnie: ostatni to wiersz skalarow, wczesniejsze to
+tablice wierszy. Dwie formy inicjatora daja te sama macierz - zagnieżdżona
+`{{1,2},{3,4}}` i plaska `{1,2,3,4}`, ktora wypelnia wierszami tak jak C.
+Regula V2 dziala per wymiar: ogon wiersza i caly brakujacy wiersz dostaja
+wartosc pusta, nadmiar wierszy albo komorek to blad. `char t[2][4] = {"ab","cd"}`
+to wiersze-bajty, `char t[] = "abc"` bierze rozmiar z literala plus NUL.
+`SketchVar.dims` pokazuje ksztalt w GUI (`int[2][3]`), wiersz jest wypisany
+`[1,2,3]`.
+
+Weryfikacja: `tests/array-2d.test.ts` (13) red -> green, suite 682/682,
+typecheck czysty, `scripts/verify18.mjs` 13/13 w Chromium (szkic ma
+`int steps[4]`, panel dalej pokazuje `int[4]`).
+
+---
+
 # Dziennik zmian implementacji
+- 2026-09-25 | V3 tablice dwuwymiarowe (commit V3) | tests/array-2d.test.ts 13x red -> green; suite 682/682; verify18.mjs 13/13 | `Declarator.dims` zamiast `arraySize`: kazda para nawiasow to wymiar (`int m[][3]` = `[null,3]`), `parseArrayLit` przyjmuje zagnieżdżone `{}`, `void f(int m[2][3])` przechodzi; `initArray` rekursywnie po wymiarach - forma zagnieżdżona i plaska daja te sama macierz, ogon wiersza i caly wiersz wypelnione, nadmiar = blad; `char t[2][4] = {"ab","cd"}`; `SketchVar.dims` = `int[2][3]` w panelu.
 - 2026-09-25 | V2 rozmiar tablicy z deklaracji (commit V2) | tests/array-init.test.ts 14x red -> green; suite 668/668 | `initArray()` jedna zasada dla globali i lokalow: rozmiar z deklaracji, ogon wypelniony (0, `""` dla `String`), blad dopiero przy nadmiarze inicjatorow; `char t[8] = "abc"` = bajty + NUL; ujemny rozmiar = blad; global wczesniej milczac przyjmowal nadmiar, lokal rzucal przy brakujacych.
 - 2026-09-25 | V1 podglad zmiennych w GUI (commit V1) | tests/variables.test.ts 10x + tests/vars-panel.test.ts 18x red -> green; suite 654/654; verify18.mjs 13/13 w Chromium | zakladka Variables obok HTTP: globale na zywo, kolejnosc strzalkami lub dragiem, chowanie i przywracanie, layout w localStorage; rdzen: `watchables()`/`machine.variables()`, puste przed `run()`.
 - 2026-09-25 | Przegląd metodą: dokumentacja vs kod | 626/626 | README "Known limitations" opisalo piec rzeczy, ktorych nie mialo w nim byc: delay() w ISR (emulator wykonuje, sprzet wiesza), stany zakazane... zamiast tego: EEPROM (zuzycie 100k cykli liczy sie od F2.2, bullet byl starszy), ADC pływajacy = 0, limit 120 ramek rekurencji, show() NeoPixel bez kosztu czasowego. Zweryfikowane sondu, zero zmian w rdzeniu.

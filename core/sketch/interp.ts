@@ -288,6 +288,8 @@ export interface SketchVar {
   value: number | string | null;
   isConst: boolean;
   length?: number;
+  /** Shape beyond the first dimension: `[2, 3]` for `int m[2][3]`. */
+  dims?: number[];
   elements?: (number | string)[];
   object?: string;
 }
@@ -306,16 +308,21 @@ function describeVar(name: string, type: string, v: Val): SketchVar {
         ? { ...base, kind: 'object', value: null, object: obj[1] }
         : { ...base, kind: 'string', value: v.v };
     }
-    case 'a':
+    case 'a': {
+      // a matrix reports its shape and one rendered row per element
+      const first = v.v[0];
+      const dims = first && first.k === 'a' ? [v.v.length, first.v.length] : null;
       return {
         ...base,
         kind: 'array',
         value: null,
         length: v.v.length,
+        ...(dims && { dims }),
         elements: v.v
           .slice(0, WATCH_ELEMENT_CAP)
-          .map((e) => (e.k === 'n' || e.k === 's' ? e.v : 0)),
+          .map((e) => (e.k === 'n' || e.k === 's' ? e.v : e.k === 'a' ? strOf(e) : 0)),
       };
+    }
     default:
       return { ...base, kind: 'void', value: null };
   }
@@ -407,20 +414,20 @@ export class Interpreter {
     if (tok) return tok;
     const isIntType = typeIsInt(g.type);
     if (d.init === null) {
-      if (d.arraySize !== null) return this.initArray([], d.arraySize, g.type, g.line);
+      if (d.dims.length > 0) return this.initArray([], d.dims, g.type, g.line);
       if (typeIsString(g.type)) return { k: 's', v: '' };
       return isIntType ? numVal(0, true) : numVal(0, false);
     }
     if (d.init.kind === 'ArrayLit') {
       const elems = d.init.elems.map((e) => this.evalConst(e, g.line));
-      return this.initArray(elems, d.arraySize, g.type, g.line);
+      return this.initArray(elems, d.dims, g.type, g.line);
     }
-    if (d.arraySize !== null && d.init.kind === 'Str' && typeIsChar(g.type)) {
-      return this.charArray(d.init.s, d.arraySize, g.line);
+    if (d.dims.length === 1 && d.init.kind === 'Str' && typeIsChar(g.type)) {
+      return this.charArray(d.init.s, d.dims[0], g.line);
     }
     // a scalar initializer for an array is not valid C++; the declared size
     // still decides what the variable is, exactly as in a function body
-    if (d.arraySize !== null) return this.initArray([], d.arraySize, g.type, g.line);
+    if (d.dims.length > 0) return this.initArray([], d.dims, g.type, g.line);
     return this.evalConst(d.init, g.line);
   }
 
@@ -463,32 +470,92 @@ export class Interpreter {
   }
 
   /**
-   * C's initializer rule, shared by both declaration sites: the declared size
-   * is the size of the array, the tail past the last initializer is filled
-   * with blanks, and only too many initializers is an error. With no declared
-   * size the initializer list decides.
+   * C's initializer rule, applied per dimension: the declared shape is the
+   * shape of the array, the tail past the last initializer is filled with
+   * blanks, and only too many initializers is an error. With no declared size
+   * the initializer list decides. Over a matrix a flat list fills it
+   * row-major and a nested one fills it row by row, so `{{1,2},{3,4}}` and
+   * `{1,2,3,4}` describe the same array.
    */
-  private initArray(elems: Val[], size: number | null, type: string, line: number): Val {
+  private initArray(elems: Val[], dims: (number | null)[], type: string, line: number): Val {
     const isInt = typeIsInt(type);
-    if (size === null) return { k: 'a', v: elems, int: isInt };
-    if (size < 0) throw new SketchRuntimeError(`array has negative size ${size}`, line);
-    if (elems.length > size) {
-      throw new SketchRuntimeError(`array size ${size} but ${elems.length} initializers`, line);
+    if (dims.length === 0) return { k: 'a', v: elems, int: isInt };
+    const [size, ...rest] = dims;
+    if (size !== null && size < 0) {
+      throw new SketchRuntimeError(`array has negative size ${size}`, line);
     }
-    const v = elems.slice();
-    while (v.length < size) v.push(this.blankOf(type));
+    if (rest.some((d) => d === null)) {
+      throw new SketchRuntimeError('only the first array dimension may be left out', line);
+    }
+    if (rest.length === 0) {
+      if (size !== null && elems.length > size) {
+        throw new SketchRuntimeError(`array size ${size} but ${elems.length} initializers`, line);
+      }
+      const v = elems.slice();
+      while (size !== null && v.length < size) v.push(this.blankOf(type));
+      return { k: 'a', v, int: isInt };
+    }
+    // a row arrives as a nested list, or as a string literal for a `char`
+    // matrix; a list of nothing but cells was written flat and gets cut up
+    const rowLen = rest[0] as number;
+    const isRow = (e: Val): boolean => e.k === 'a' || (typeIsChar(type) && e.k === 's');
+    const rows = elems.some(isRow)
+      ? elems.map((e) =>
+          e.k === 'a'
+            ? e.v
+            : typeIsChar(type) && e.k === 's'
+              ? this.charArray(e.v, rowLen, line).v
+              : [e],
+        )
+      : this.rowsOfFlat(elems, size, rest, line);
+    if (size !== null && rows.length > size) {
+      throw new SketchRuntimeError(`array size ${size} but ${rows.length} initializers`, line);
+    }
+    const v = rows.map((r) => this.initArray(r, rest, type, line));
+    while (size !== null && v.length < size) v.push(this.initArray([], rest, type, line));
     return { k: 'a', v, int: isInt };
   }
 
+  /** Cells of an initializer list, evaluated left to right; a nested list is
+   *  a row of a matrix and becomes an array value of its own. */
+  private initElems(list: Expr[], ev: (e: Expr) => Val): Val[] {
+    return list.map((e) =>
+      e.kind === 'ArrayLit' ? { k: 'a', v: this.initElems(e.elems, ev), int: true } : ev(e),
+    );
+  }
+
+  /** Cells of a flat initializer cut into rows of `rest`'s cell count. */
+  private rowsOfFlat(elems: Val[], size: number | null, rest: (number | null)[], line: number): Val[][] {
+    const cells = rest.reduce<number>((n, d) => n * (d ?? 0), 1);
+    if (cells <= 0) {
+      if (elems.length) {
+        throw new SketchRuntimeError(`array has no room for ${elems.length} initializers`, line);
+      }
+      return [];
+    }
+    if (size !== null && elems.length > size * cells) {
+      throw new SketchRuntimeError(
+        `array size ${size}x${cells} but ${elems.length} initializers`, line,
+      );
+    }
+    const rows: Val[][] = [];
+    for (let i = 0; i < elems.length; i += cells) rows.push(elems.slice(i, i + cells));
+    return rows;
+  }
+
   /** `char t[8] = "abc"` stores bytes and NUL-pads, like C. A literal that
-   *  fills the array exactly has no room for the terminator and is legal. */
-  private charArray(text: string, size: number, line: number): Val {
-    if (size < 0) throw new SketchRuntimeError(`array has negative size ${size}`, line);
-    if (text.length > size) {
-      throw new SketchRuntimeError(`array size ${size} but ${text.length} initializers`, line);
+   *  fills the array exactly has no room for the terminator and is legal;
+   *  with no declared size the terminator decides. */
+  private charArray(text: string, size: number | null, line: number): Extract<Val, { k: 'a' }> {
+    if (size !== null && size < 0) {
+      throw new SketchRuntimeError(`array has negative size ${size}`, line);
+    }
+    const n = size ?? text.length + 1;
+    if (text.length > n) {
+      throw new SketchRuntimeError(`array size ${n} but ${text.length} initializers`, line);
     }
     const v = Array.from(
-      { length: size },
+      { length: n },
       (_, i) => numVal(i < text.length ? text.codePointAt(i) ?? 0 : 0, true),
     );
     return { k: 'a', v, int: true };
@@ -629,7 +696,7 @@ export class Interpreter {
           // bindStatics may have pre-bound this name already.
           if (scope.vars.has(d.name)) continue;
           let v: Val;
-          if (!stmt.isStatic && !stmt.isConst && d.init && d.arraySize === null && d.init.kind !== 'ArrayLit') {
+          if (!stmt.isStatic && !stmt.isConst && d.init && d.dims.length === 0 && d.init.kind !== 'ArrayLit') {
             // a plain initializer may suspend (int r = WiFi.waitForConnectResult();)
             v = dup(yield* this.eval(d.init, scope));
             if (typeIsString(stmt.type) && v.k === 'n') v = { k: 's', v: strOf(v) };
@@ -748,15 +815,15 @@ export class Interpreter {
     const tok = this.wifiToken(d, g);
     if (tok) return tok;
     const isIntType = typeIsInt(g.type);
-    if (d.arraySize !== null || (d.init && d.init.kind === 'ArrayLit')) {
+    if (d.dims.length > 0 || (d.init && d.init.kind === 'ArrayLit')) {
       if (d.init && d.init.kind === 'ArrayLit') {
-        const elems = d.init.elems.map((e) => this.evalPure(e, scope));
-        return this.initArray(elems, d.arraySize, g.type, g.line);
+        const elems = this.initElems(d.init.elems, (e) => this.evalPure(e, scope));
+        return this.initArray(elems, d.dims, g.type, g.line);
       }
-      if (d.init && d.init.kind === 'Str' && d.arraySize !== null && typeIsChar(g.type)) {
-        return this.charArray(d.init.s, d.arraySize, g.line);
+      if (d.init && d.init.kind === 'Str' && d.dims.length === 1 && typeIsChar(g.type)) {
+        return this.charArray(d.init.s, d.dims[0], g.line);
       }
-      return this.initArray([], d.arraySize, g.type, g.line);
+      return this.initArray([], d.dims, g.type, g.line);
     }
     if (!d.init) {
       if (typeIsString(g.type)) return { k: 's', v: '' };

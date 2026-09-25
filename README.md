@@ -148,6 +148,10 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
   arrays pad with `""`, `char t[8] = "abc"` stores bytes plus a NUL). Only too
   many initializers is an error, and it surfaces at run time - there is no
   compile step to report it in.
+- Matrices work: `int keys[4][3]` is four rows of three, indexed `keys[r][c]`,
+  and both initializer shapes describe the same matrix - `{{1,2},{3,4}}` and
+  the flat `{1,2,3,4}` that fills it row by row. The first dimension may be
+  left out (`int m[][3]`), the inner ones may not.
 - Timer ISRs are cooperative: they run between `loop()` slices, never
   preempting it. They are also permissive: `delay()`, `millis()` and even an
   HTTP call inside a handler run like main-line code and spend virtual time,
