@@ -22,6 +22,12 @@ static server). Tests: `pnpm test` (Vitest). Browser E2E (needs `pnpm run build`
 `verify9.mjs` (each prints PASS/FAIL lines; `verify8` runs the two-device LAN
 bench, `verify9` the project autosave round-trip).
 
+Two examples (`roleta_LoLin_v20.ino`, `roleta_LoLin_WeMos_v19.7.6_k1_sm.ino`)
+are **copies** of firmware that lives outside this repo. `npm run sync:examples`
+refreshes them and records the hashes in `examples/sync-manifest.json`;
+`pretest` runs `npm run check:examples` first, so the suite refuses to go green
+against a stale copy (a test that passes on old firmware proves nothing).
+
 ## Using it
 
 1. **Build the circuit** - drag components from the left palette onto the
@@ -142,10 +148,18 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
   150 ohms like a real 5V module.
 - Capacitors are ideal open circuits at logic level (no charge/discharge
   curve - the solver is DC); they place, wire and label (uF/mF) normally.
-- The virtual LAN is in-process: requests are delivered instantly (no wire
-  latency, no packet loss, ports are implicit per chip), HTTPS and WebSockets
-  are not modeled. `MDNS.begin` registers a name in that registry - resolution
-  is instant and local.
+- The virtual LAN is in-process: a healthy link is instant (no wire latency,
+  no packet loss, ports are implicit per chip), HTTPS and WebSockets are not
+  modeled. `MDNS.begin` registers a name in that registry - resolution is
+  instant and local. One peer's link can be degraded on purpose with
+  `setPeerLatency(host, ms)` (round trip the client blocks),
+  `setPeerUnreachable(host)` (frames go nowhere; the client burns its whole
+  `setTimeout()` and then fails) and `setPeerDown(host)` (connection refused,
+  fails at once); `clearImpairments(host)` heals it. The stall is charged to
+  the caller's own clock, so `millis()` arithmetic in the sketch sees it.
+  A host that was never registered still fails immediately rather than
+  hanging to the timeout like real hardware - use `setPeerUnreachable` for
+  that case.
 - EEPROM is a 4096-byte byte array (no wear leveling, no page-size errors);
   `commit()` marks it dirty, which drives the project autosave.
 - `configTime` locks to the **wall-clock** epoch plus virtual time since

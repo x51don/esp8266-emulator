@@ -453,7 +453,61 @@ www-form-urlencoded). HttpPanel: toggle Log|Page, iframe + podsłuch
 click/submit wdokumencie srcDoc, wstecz. Testy: tests/webview.test.ts.
 
 ---
+# N1 Kopie `examples/*.ino` + straznik swiezosci (naprawa 1 z 6, commit F1)
+
+**Spec.** Dwa przyklady w repo to kopie firmware lezacego poza repo
+(`../Rolety/*.ino`). Testy mogly chodzic na nieaktualnym firmware byc zielone:
+kopia v20 roznila sie od zrodla 89 liniami, a `roleta-v20.test.ts` to
+przechodzil. Symlink odpada (dangling link w checkout bez katalogu `Rolety/`
+rozwalilby `vite build`), wiec: kopia + manifest hashy + test strazniczy.
+
+**Status: DONE** (2026-09-25; 576 testow).
+
+**Kod.** `scripts/sync-examples.mjs` (`readManifest/inspect/sync`, CLI z
+`--check`) + `examples/sync-manifest.json` (sciezka zrodla i sha256 kopii z
+ostatniego syncu). Trzy niezalezne kontrole wiersza: `copyDrift` (kopia !=
+manifest, zawsze fatalna, zrodlo niepotrzebne), `stale` (zrodlo != manifest),
+`copyMissing`; brak zrodla = skip, nigdy fail. `pretest` odpala `--check`,
+wiec `npm test` nie przejdzie na swiezym zrodle bez syncu;
+`npm run sync:examples` nadpisuje kopie i przepisuje hashe. Testy:
+`tests/examples-sync.test.ts` (strazniki na prawdziwym repo + test mechanizmu
+na fixture w /tmp). Manifest seeduje sie hashem KOPII, nie zrodla - inaczej
+realny defekt klasyfikuje sie jako DRIFT zamiast STALE.
+
+---
+# N2 Model latencji i awarii kolegi w LAN (naprawa 2 z 6, commit F2)
+
+**Spec.** Wirtualna LAN byla binarna: zarejestrowany host odpowiadal w 0 us,
+niezarejestrowany dostawal -1 natychmiast. Prawdziwy ESP8266 wisi w
+`connect()`/odczycie do wlasnego `setTimeout()` i zna stan "zyje, ale wolno".
+Brakowalo inzynierii bledów widocznej dla szkicu, nie tylko dla panelu.
+
+**Status: DONE** (2026-09-25; 586 testow).
+
+**Kod.** Tabela wad lacza mieszka w `Lan` (klucz = host tak jak go zapisano,
+plus rozwiązywany mDNS -> IP); przezywa restart kolegi, znika przy `unregister`.
+API: `setPeerLatency(host, ms)` (round-trip, o ktory blokujey klient),
+`setPeerUnreachable(host)` (ramki gina, kolega w ogole nie widzi zadania,
+klient pali caly `setTimeout()`), `setPeerDown(host)` (connection refused,
+fail za 0 ms), `clearImpairments(host)`, `impairmentFor(host)`; facade maszyny
+pzekazuje wywolania. `httpCall` GET/POST liczy `elapsed` z wady lacza (nie z
+iteracji pumpa) i zwraca `{ suspend:{kind:'delay',us}, value }`, wiec zegar
+KLIENTA idzie o tyle samo co zegar kolegi - `millis()` w szkicu widzi zator.
+Zdrowe lacze zostaje darmowe (0 ms): tak bylo udokumentowane i na tym trzymaly
+sie istniejace testy. `lanFetch` (panel GUI mowiacy do INNEGO czipu) tez
+respektuje wade; `fetchHttp` (konsola wlasnego czipu) nie - to polaczenie
+lokalne, nie przez drut. Swiadome odstepstwo: niezarejestrowany host wciaz
+dostaje -1 natychmiast (gdyby wisial do timeoutu, `web-f5` odpalalby 3x5000 ms
+w `setup()`); do modelu "wisi i wisi" sluzy `setPeerUnreachable`. Testy:
+`tests/net-impair.test.ts` (10: 300 ms -> 200 po ~300; 3000 ms -> -1 dokladnie
+po 1500, a kolega i tak obsluzyl zadanie; unreachable -> -1 po 1500 i zero
+trafien na serwerze; down -> -1 za ~0 ms; heal; per-host; mDNS; sprzatanie po
+dispose; facade).
+
+---
 # Dziennik zmian implementacji
+- 2026-09-25 | N2 latencja/awarie kolegi w LAN (commit F2) | tests/net-impair.test.ts 10x red -> green; suite 586/586 | wady lacza w `Lan` per host, przezywa restart kolegi, kasowane przy unregister; `elapsed` liczony z wady lacza a nie z iteracji pumpa; suspend przesuwa zegar klienta; zdrowe lacze wciaz 0 ms; unregistered host wciaz -1 natychmiast (udokumentowane).
+- 2026-09-25 | N1 kopie examples/*.ino + straznik (commit F1) | tests/examples-sync.test.ts 7x red -> green; suite 576/576 | kopia v20 rozjechana ze zrodlem o 89 linii wobec zielonego suite; manifest seedowany hashem KOPII; `pretest` = `sync-examples --check`; +@types/node (typecheck nie widzial node:*).
 - 2026-09-19 F3.3 fix: panel HTTP sam podaza za IP czipu (sketch z WiFi.config() przepisywuje sie na .150 - pole URL i hint), komunikat "no response" podaje biezacy adres; zweryfikowane headless (Playwright): auto-IP, klik linkow, back.
 - 2026-09-19 F3.3: widok Page w panelu HTTP - HTML serwera szkicu (rolema) renderowany w iframe sandbox, linki i formularze nawigują przez LAN; gui/webview.ts + 9 testów; 569 zielone.
 - 2026-09-19 F3.2: etykiety komponentów pod symbolem (dialog Label, round-trip, walidacja) + Auto-wire podpisuje części nazwami stałych/zmiennych ze szkicu; 7 nowych testów, 560 zielone. commit db3a5a3

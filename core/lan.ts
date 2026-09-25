@@ -29,17 +29,77 @@ export interface LanHost {
   pump(ms: number): void;
 }
 
+/**
+ * F2: a link to one peer, degraded on purpose. Real LANs are not a boolean:
+ * a peer can be slow, or swallow every frame, or refuse connections. Each
+ * row applies to one host (IP, or an mDNS name that resolves to one).
+ *  - latency:     the round trip takes `ms`; past the client's timeout the
+ *                 call fails even though the peer answered
+ *  - unreachable: frames go nowhere (wrong IP, dead AP, cable out); the
+ *                 client waits its full timeout before reporting failure
+ *  - down:        nothing answers the SYN; the client fails right away
+ */
+export type PeerImpairment =
+  | { kind: 'latency'; ms: number }
+  | { kind: 'unreachable' }
+  | { kind: 'down' };
+
 export class Lan {
   private hosts = new Map<string, LanHost>();
   /** F7: mDNS names (lowercase, no .local suffix) -> ip */
   private names = new Map<string, string>();
+  /** F2: per-peer link degradation, keyed by lowercase host as written */
+  private impairments = new Map<string, PeerImpairment>();
 
   register(host: LanHost): void {
     this.hosts.set(host.ip, host);
   }
 
   unregister(host: LanHost): void {
-    if (this.hosts.get(host.ip) === host) this.hosts.delete(host.ip);
+    if (this.hosts.get(host.ip) === host) {
+      this.hosts.delete(host.ip);
+      this.impairments.delete(impKey(host.ip)); // no stale rows for a gone peer
+    }
+  }
+
+  // ---- F2: impairment injection -------------------------------------------
+
+  setPeerLatency(host: string, ms: number): void {
+    this.setImpairment(host, { kind: 'latency', ms: Math.max(0, ms) });
+  }
+
+  setPeerUnreachable(host: string): void {
+    this.setImpairment(host, { kind: 'unreachable' });
+  }
+
+  setPeerDown(host: string): void {
+    this.setImpairment(host, { kind: 'down' });
+  }
+
+  clearImpairments(host: string): void {
+    this.impairments.delete(impKey(host));
+    const ip = this.resolveHost(host);
+    if (ip) this.impairments.delete(impKey(ip));
+  }
+
+  clearAllImpairments(): void {
+    this.impairments.clear();
+  }
+
+  /** The impairment in force for `host` as a sketch wrote it (name or IP). */
+  impairmentFor(host: string): PeerImpairment | null {
+    const direct = this.impairments.get(impKey(host));
+    if (direct) return direct;
+    const ip = this.resolveHost(host);
+    return ip ? this.impairments.get(impKey(ip)) ?? null : null;
+  }
+
+  private setImpairment(host: string, imp: PeerImpairment): void {
+    this.impairments.set(impKey(host), imp);
+    // A name that already resolves is also recorded under its IP, so the
+    // row is found whichever spelling the sketch uses.
+    const ip = this.resolveHost(host);
+    if (ip) this.impairments.set(impKey(ip), imp);
   }
 
   registerName(name: string, ip: string): void {
@@ -105,6 +165,11 @@ function canonicalName(name: string): string {
   return name.trim().toLowerCase().replace(/\.local$/, '').replace(/\.$/, '');
 }
 
+/** Impairment rows are keyed by the host exactly as it was written. */
+function impKey(host: string): string {
+  return host.trim().toLowerCase();
+}
+
 /**
  * Serve `url` against any LAN host on behalf of the GUI (the HTTP panel).
  * Never call from inside a machine pump - like fetchHttp, this is GUI-context
@@ -118,6 +183,10 @@ export function lanFetch(
 ): HttpResp | null {
   const parts = parseUrl(url);
   if (!host || !parts) return null;
+  // F2: the panel is just another client on the wire - a broken link is
+  // broken for it too.
+  const imp = lan.impairmentFor(host.ip);
+  if (imp && imp.kind !== 'latency') return null;
   const req: HttpReq = {
     method,
     uri: parts.uri,
@@ -125,6 +194,7 @@ export function lanFetch(
     body,
   };
   host.deliver(req);
-  for (let waited = 0; waited < 2000 && !req.resp; waited++) host.pump(1);
+  const flight = imp && imp.kind === 'latency' ? imp.ms : 0;
+  for (let waited = 0; waited < 2000 && (!req.resp || waited < flight); waited++) host.pump(1);
   return req.resp ?? null;
 }

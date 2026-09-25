@@ -20,7 +20,7 @@
 
 import { Clock, type TimerId } from './clock';
 import { lan, parseForm, parseUrl } from './lan';
-import type { HttpReq, HttpResp, LanHost } from './lan';
+import type { HttpReq, HttpResp, LanHost, PeerImpairment } from './lan';
 import {
   GpioRegisters, GPIO_OUT_W1TS, GPIO_OUT_W1TC, GPIO_ENABLE_W1TS, GPIO_ENABLE_W1TC,
 } from './registers';
@@ -917,6 +917,10 @@ private webCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
  * HTTPClient: begin(url)/begin(client, url)/begin(client, host, port, path),
  * GET()/POST(body), GET-returns -1 for unknown peers (that is what makes
  * the v20 peer_cmd retry loop testable), getString/end.
+ *
+ * F2: the call blocks for as long as the link is impaired (see Lan's
+ * impairment table) and suspends THIS machine's clock by the same amount,
+ * so a slow or deaf peer is visible in the sketch's own millis() arithmetic.
  */
 private httpCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
   const num = (v: HostValue | undefined): number => (typeof v === 'number' ? v : Number(v ?? 0));
@@ -956,23 +960,53 @@ private httpCall(obj: LibObj, meth: string, args: HostValue[]): HostResult {
         body,
       };
       const target = lan.routeHost(url.host);
+      const imp = lan.impairmentFor(url.host);
+      const timeout = Math.max(0, Math.round(obj.timeoutMs ?? 5000));
       // no route, or fetching our own machine (our loop is busy inside GET;
-      // the emulator does not buffer self-connections) -> connection failed
-      if (!target || (target as unknown) === this) {
+      // the emulator does not buffer self-connections), or the peer refuses
+      // connections -> connection failed, and it costs nothing
+      if (!target || (target as unknown) === this || imp?.kind === 'down') {
         obj.resp = null;
         obj.lastError = -1;
         return { value: -1 };
       }
-      target.deliver(req);
-      const deadline = obj.timeoutMs ?? 5000;
-      for (let waited = 0; waited < deadline && !req.resp; waited++) target.pump(1);
-      if (!req.resp) {
-        obj.resp = null;
-        obj.lastError = -1;
-        return { value: -1 };
+      // How long the CLIENT blocks on this call. A healthy LAN call is free
+      // (the documented baseline of this emulator); an impaired one costs
+      // what the wire costs, and the suspend below moves THIS machine's clock
+      // too, so the sketch's own millis() arithmetic sees the stall.
+      let elapsed = 0;
+      let answered = false;
+      if (imp?.kind === 'unreachable') {
+        // frames go nowhere: the peer is never involved, the client just
+        // burns its whole timeout waiting for an answer that cannot come
+        target.pump(timeout);
+        elapsed = timeout;
+      } else {
+        const flight = imp?.kind === 'latency' ? imp.ms : 0;
+        target.deliver(req);
+        // let the peer's sketch reach handleClient() and answer
+        let served = 0;
+        while (served < timeout && !req.resp) {
+          target.pump(1);
+          served++;
+        }
+        if (req.resp && flight <= timeout) {
+          answered = true;
+          elapsed = flight;
+          if (flight > served) target.pump(flight - served); // wire time passes there too
+        } else {
+          // no answer, or one that lands after the client gave up: the reply
+          // is lost on the wire and the client pays its full timeout
+          elapsed = timeout;
+          if (timeout > served) target.pump(timeout - served);
+        }
       }
-      obj.resp = req.resp;
-      return { value: req.resp.status };
+      obj.resp = answered ? req.resp! : null;
+      if (!answered) obj.lastError = -1;
+      const value = answered ? req.resp!.status : -1;
+      return elapsed > 0
+        ? { suspend: { kind: 'delay', us: elapsed * 1000 }, value }
+        : { value };
     }
     case 'getString': {
       const body = obj.resp?.body ?? '';
@@ -1029,6 +1063,27 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
   for (let waited = 0; waited < 2000 && !req.resp; waited++) this.advance(1);
   return req.resp ?? null;
 }
+
+  /**
+   * F2: degrade the link to one peer. The table lives in the LAN, so the
+   * impairment hits every machine that talks to that host, not just this
+   * one. `host` is an IP or an mDNS name.
+   */
+  setPeerLatency(host: string, ms: number): void {
+    lan.setPeerLatency(host, ms);
+  }
+  setPeerUnreachable(host: string): void {
+    lan.setPeerUnreachable(host);
+  }
+  setPeerDown(host: string): void {
+    lan.setPeerDown(host);
+  }
+  clearImpairments(host: string): void {
+    lan.clearImpairments(host);
+  }
+  peerImpairment(host: string): PeerImpairment | null {
+    return lan.impairmentFor(host);
+  }
 
   /** F2.5: the radio is up (or coming up): joining, linked, or serving. */
   private radioActive(): boolean {
