@@ -36,6 +36,14 @@ export interface HostResult {
   value?: HostValue;
   isFloat?: boolean;
   suspend?: Suspend;
+  /**
+   * With a `suspend`: the value was only a provisional answer, so re-enter
+   * the host call once the clock has moved and use its answer instead. For
+   * a host call that waits on state the interpreter cannot see (a WiFi
+   * association that may still be running). The call must be idempotent -
+   * it runs again with the same arguments.
+   */
+  again?: boolean;
 }
 
 export interface InterpreterEnv {
@@ -783,9 +791,15 @@ export class Interpreter {
             return strMethod(recv.v, callee.slice(dot + 1), args, e.line);
           }
         }
-        const res = this.env.call(callee, args.map(toHost));
-        if (res.suspend) {
+        const hostArgs = args.map(toHost);
+        let res = this.env.call(callee, hostArgs);
+        // A host call can park the caller and ask to be re-entered once the
+        // clock moved (WiFi.waitForConnectResult polling an association that
+        // may still be running, or may never finish).
+        while (res.suspend) {
           yield res.suspend;
+          if (!res.again) break;
+          res = this.env.call(callee, hostArgs);
         }
         return fromHost(res.value, res.isFloat);
       }

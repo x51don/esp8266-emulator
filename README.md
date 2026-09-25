@@ -160,6 +160,16 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
   A host that was never registered still fails immediately rather than
   hanging to the timeout like real hardware - use `setPeerUnreachable` for
   that case.
+- Association is a fixed 1.5 s and there is no signal model (no RSSI, no
+  scan, no wrong-password network), but the access point can be taken away:
+  `setWifiDown(true)` drops the link at once - `isConnected()`/`status()`/
+  `localIP()` go dead, a soft-AP stops existing, and the chip answers nobody
+  over the LAN - while a join already in flight stops making progress.
+  `WiFi.waitForConnectResult(t)` polls and returns `WL_DISCONNECTED` when its
+  own timeout runs out, so a recovery loop costs virtual time instead of
+  wedging the interpreter. Handing the AP back costs a fresh association
+  (1.5 s) or AP bring-up (300 ms). The outage is an environment condition,
+  not chip state: it survives `run()` and `ESP.restart()`.
 - EEPROM is a 4096-byte byte array (no wear leveling, no page-size errors);
   `commit()` marks it dirty, which drives the project autosave.
 - `configTime` locks to the **wall-clock** epoch plus virtual time since

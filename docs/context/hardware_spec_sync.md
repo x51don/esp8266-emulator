@@ -505,7 +505,40 @@ trafien na serwerze; down -> -1 za ~0 ms; heal; per-host; mDNS; sprzatanie po
 dispose; facade).
 
 ---
+# N3 Znikajacy punkt dostepowy (naprawa 3 z 6, commit F3)
+
+**Spec.** WiFi bylo stoperem: `begin()` zawsze konczyle sie 1.5 s pozniej,
+wiec zaden szkic nie dal sie pokazac jako niepolaczony, a petla ratunkowa
+`while (WiFi.waitForConnectResult() != WL_CONNECTED)` albo przechodzila, albo
+zawieszala interpreter na zawsze.
+
+**Status: DONE** (2026-09-25; 596 testow).
+
+**Kod.** `Esp8266Machine.setWifiDown(true|false)` - warunek srodowiska, nie
+stan czipu, wiec przezywa `run()` i `ESP.restart()`. `staUp()` (nowe, jedyny
+interpreter "czy lacze zyje") liczy `connectAt !== null && !wifiDown &&
+now >= connectAt`; `isConnected`, `status`, `localIP` i `apUp` pytaja wlasnie
+jego. `deliver()` i `fetchHttp` przy awarii odrzucaja zadania - czip bez
+radia nie obsluguje nikogo, wiec klient wypala caly wlasny timeout.
+`waitForConnectResult(t)` dostal semantyke rdzenia: pytaj `status()` az do
+`WL_CONNECTED`, a po wlasnym timeout zwróc `WL_DISCONNECTED` (6). Zeby to
+dzialalo bez wieszania interpretera, `HostResult` ma `again`: host moze
+zaparkowac kawalek czasu (50 ms) i poprosic o ponowne wywolanie z tymi
+samymi argumentami; petla jest w jednym miejscu `interp.ts` (jedyne
+`env.call`), a z `again` korzysta tylko to jedno wywolanie - musi byc
+idempotentne. Powrot punktu dostepowego kosztuje nowa asocjacja (1.5 s) albo
+nowy bring-up AP (300 ms) - radio nie wznawia polowy polaczenia. Testy:
+`tests/wifi-down.test.ts` (10: link w dol i w gore; join started w czasie
+awarii nigdy sie nie konczy; `waitForConnectResult(2000)` zwraca 6 dokladnie
+po 2000 ms a sketch drukuje "alive"; zaparkowany join konczy sie po powrocie
+AP; petla `while(...) != 3` tyka zamiast stac; soft-AP; zdjecie awarii,
+ktorej nie bylo, nie rusza lacza; awaria serwera kosztuje klientow caly
+timeout; panel HTTP milczy; kryterium: blink+HTTP miga przez cala awarie i po
+powrocie AP drukuje link 1, IP i http 200).
+
+---
 # Dziennik zmian implementacji
+- 2026-09-25 | N3 znikajacy punkt dostepowy (commit F3) | tests/wifi-down.test.ts 10x red -> green; suite 596/596 | `setWifiDown` to stan srodowiska (przezywa run/restart); `staUp()` jedynym source of truth lacza; `HostResult.again` = parkuj i wywolaj ponownie (jedno `env.call`); `waitForConnectResult` zwraca 6 po wlasnym timeout zamiast wieszac interpreter; przy awarii czip nie obsluguje LAN.
 - 2026-09-25 | N2 latencja/awarie kolegi w LAN (commit F2) | tests/net-impair.test.ts 10x red -> green; suite 586/586 | wady lacza w `Lan` per host, przezywa restart kolegi, kasowane przy unregister; `elapsed` liczony z wady lacza a nie z iteracji pumpa; suspend przesuwa zegar klienta; zdrowe lacze wciaz 0 ms; unregistered host wciaz -1 natychmiast (udokumentowane).
 - 2026-09-25 | N1 kopie examples/*.ino + straznik (commit F1) | tests/examples-sync.test.ts 7x red -> green; suite 576/576 | kopia v20 rozjechana ze zrodlem o 89 linii wobec zielonego suite; manifest seedowany hashem KOPII; `pretest` = `sync-examples --check`; +@types/node (typecheck nie widzial node:*).
 - 2026-09-19 F3.3 fix: panel HTTP sam podaza za IP czipu (sketch z WiFi.config() przepisywuje sie na .150 - pole URL i hint), komunikat "no response" podaje biezacy adres; zweryfikowane headless (Playwright): auto-IP, klik linkow, back.

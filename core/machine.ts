@@ -168,6 +168,8 @@ export class Esp8266Machine implements LanHost {
     mode: 0,
     /** F2.6: µs when the soft-AP comes up (core needs ~300 ms); null = off. */
     apAt: null as number | null,
+    /** F3: µs deadline of the waitForConnectResult() in flight; null = none. */
+    waitDeadline: null as number | null,
     objs: new Map<string, {
       kind: 'WiFiClient' | 'WiFiServer' | 'WiFiUDP' | 'ESP8266WebServer' | 'HTTPClient' | 'IPAddress' | 'Adafruit_NeoPixel'
         | 'Ticker' | 'Servo';
@@ -177,6 +179,12 @@ export class Esp8266Machine implements LanHost {
       args: number[];
     }>(),
   };
+  /**
+   * F3 (repair 3/6): the access point has disappeared. This is an
+   * environment condition and not chip state, so it survives run() and
+   * ESP.restart() - the sketch boots back into the same dead air.
+   */
+  private wifiDown = false;
   /** P3.2 attachInterrupt(): gpio -> {isr, mode}; CHANGE=0 FALLING=1 RISING=2. */
   private attachments = new Map<number, { fn: string; mode: number }>();
   private isrPrev = new Map<number, 0 | 1>();
@@ -241,6 +249,9 @@ export class Esp8266Machine implements LanHost {
 
   /** LanHost: queue a request for this machine's HTTP server(s). */
   deliver(req: HttpReq): void {
+    // F3: with the radio off this chip answers nobody - the request simply
+    // never arrives, so the caller burns its own timeout and fails.
+    if (this.wifiDown) return;
     this.httpInbox.push(req);
   }
 
@@ -350,6 +361,7 @@ export class Esp8266Machine implements LanHost {
     this.wifi.connectAt = null;
     this.wifi.apAt = null;
     this.wifi.mode = 0;
+    this.wifi.waitDeadline = null;
     this.ntp = { syncAt: null, gmtOff: 0, dstOff: 0 };
     this.timeLib = null;
     this.wifi.objs.clear();
@@ -1047,10 +1059,11 @@ private drainGen(gen: SketchGen): void {
 /**
  * The GUI "HTTP" panel's entry point: one request to this machine, served
  * the honest way - the sketch must reach handleClient() on its own, so we
- * pump virtual time until the queue empties into a response.
+ * pump virtual time until the queue empties into a response. F3: while the
+ * radio is down the panel gets nothing, same as any other host on the LAN.
  */
 fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
-  if (this.machinePhase !== 'running') return null;
+  if (this.machinePhase !== 'running' || this.wifiDown) return null;
   const parts = parseUrl(url);
   if (!parts || lan.resolveHost(parts.host) !== this.ip) return null;
   const req: HttpReq = {
@@ -1092,7 +1105,43 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
 
   /** F2.6: the soft-AP finished its ~300 ms bring-up. */
   private apUp(): boolean {
-    return this.wifi.apAt !== null && this.clock.now() >= this.wifi.apAt;
+    return this.wifi.apAt !== null && !this.wifiDown && this.clock.now() >= this.wifi.apAt;
+  }
+
+  /**
+   * F3: the STA link is up - a join was started, it finished, and there is
+   * an access point to be joined to. While the AP is down no amount of
+   * waiting makes this true, which is exactly what a sketch can test.
+   */
+  private staUp(): boolean {
+    const c = this.wifi.connectAt;
+    return c !== null && !this.wifiDown && this.clock.now() >= c;
+  }
+
+  /**
+   * F3 (repair 3/6): take the access point away (true) or give it back
+   * (false). With it gone the link drops at once, a join in flight stops
+   * making progress, and a soft-AP stops existing. Handing it back costs a
+   * fresh association (1.5 s) or a fresh AP bring-up (300 ms) - the radio
+   * has to find the network again, it does not resume mid-handshake.
+   */
+  setWifiDown(down: boolean): void {
+    if (down) {
+      this.wifiDown = true;
+      return;
+    }
+    if (!this.wifiDown) return; // nothing was down: leave the link alone
+    this.wifiDown = false;
+    const now = this.clock.now();
+    if (this.wifi.mode & 1 || this.wifi.connectAt !== null) {
+      this.wifi.connectAt = now + 1_500_000;
+    }
+    if (this.wifi.mode & 2) this.wifi.apAt = now + 300_000;
+  }
+
+  /** F3: is the access point currently gone? */
+  isWifiDown(): boolean {
+    return this.wifiDown;
   }
 
   private wifiCall(
@@ -1871,20 +1920,40 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
             if (ip) this.setLanIp(ip);
             return { value: 1 };
           }
-          case 'WiFi.isConnected': {
-            const c = this.wifi.connectAt;
-            return { value: c !== null && this.clock.now() >= c ? 1 : 0 };
-          }
+          case 'WiFi.isConnected':
+            return { value: this.staUp() ? 1 : 0 };
           case 'WiFi.reconnect':
             this.wifi.connectAt = this.clock.now() + 1_500_000;
             return { value: 0 }; // WL_DISCONNECTED while the join runs
           case 'WiFi.waitForConnectResult': {
-            const c = this.wifi.connectAt;
-            if (c === null) return { value: 6 }; // nobody ever began a join
-            const wait = c - this.clock.now();
-            return wait > 0
-              ? { suspend: { kind: 'delay', us: wait }, value: 3 }
-              : { value: 3 };
+            // Core semantics: poll status() until it says WL_CONNECTED, and
+            // give up with WL_DISCONNECTED when the caller's own timeout
+            // runs out. The poll parks the sketch for a slice at a time and
+            // asks to be re-entered (HostResult.again), so an access point
+            // that never comes back costs the timeout and nothing more -
+            // the interpreter is never the thing that hangs.
+            if (this.staUp()) {
+              this.wifi.waitDeadline = null;
+              return { value: 3 /* WL_CONNECTED */ };
+            }
+            if (this.wifi.connectAt === null) {
+              this.wifi.waitDeadline = null;
+              return { value: 6 }; // nobody began a join
+            }
+            if (this.wifi.waitDeadline === null) {
+              const waitMs = args.length ? Math.max(0, Math.round(num(args[0]))) : 10_000;
+              this.wifi.waitDeadline = this.clock.now() + waitMs * 1000;
+            }
+            const left = this.wifi.waitDeadline - this.clock.now();
+            if (left <= 0) {
+              this.wifi.waitDeadline = null;
+              return { value: 6 /* WL_DISCONNECTED */ };
+            }
+            return {
+              suspend: { kind: 'delay', us: Math.min(left, 50_000) },
+              value: 6,
+              again: true,
+            };
           }
 
           // ---- time & NTP (milestone 15) ----
@@ -1959,8 +2028,7 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
             this.wifi.connectAt = null;
             return { value: 1 };
           case 'WiFi.status': {
-            const c = this.wifi.connectAt;
-            const staUp = c !== null && this.clock.now() >= c;
+            const staUp = this.staUp();
             // Task rule "poprawne flagi w AP": a soft-AP-only radio reports
             // WL_CONNECTED once the AP is up. With STA in the mask the core
             // semantics stand (status tracks association only) - sketches
@@ -1969,9 +2037,7 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
             return { value: staUp || apOnlyUp ? 3 /* WL_CONNECTED */ : 6 };
           }
           case 'WiFi.localIP':
-            return { value: this.staticLease
-              || (this.wifi.connectAt !== null && this.clock.now() >= this.wifi.connectAt)
-              ? this.ip : '0.0.0.0' };
+            return { value: this.staticLease || this.staUp() ? this.ip : '0.0.0.0' };
           case 'WiFi.softAPIP':
             // F2.6: the AP interface address exists only while the AP runs
             return { value: this.apUp() ? '192.168.4.1' : '0.0.0.0' };
