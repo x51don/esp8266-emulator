@@ -643,7 +643,38 @@ Odstepstwa: bench to test, nie funkcja GUI; wielomaszynowosc w GUI istnieje
 osobno (zakladki urzadzen) i nie jest tu objeta asercjami.
 
 ---
+# V1 Podglad zmiennych w GUI (commit V1)
+
+**Spec.** Zmienne szkicu byly widoczne tylko przez `Serial.print` albo przez
+`window.__emu` w konsoli. Obok zakladki HTTP w docku ma byc zywy podglad:
+domyślnie wszystkie, z mozliwoscia zmiany kolejnosci i chowania.
+
+**Status: DONE** (2026-09-25; 654 testy).
+
+**Kod.** `Interpreter.watchables()` zwraca globale w kolejnosci deklaracji
+(`SketchVar`: nazwa, typ jak w zrodle, wartosc, `isConst`), `Esp8266Machine
+.variables()` to jedyny punkt wyjscia - przed `run()` zwraca `[]`, bo
+inicjalizatory jeszcze nie dzialaly i pokazywalibysmy wartosc, ktorej czip nie
+ma. `gui/components/VariablesPanel.tsx` trzyma cala logike (kolejnosc,
+chowanie, formatowanie, podswietlenie zmiany) jako funkcje czyste, wiec suite
+je tyka bez DOM; komponent to te funkcje plus markup. Preferencja to
+`{order, hidden}` na nazwach, nie indeksach - przetrwa edycje szkicu:
+skreslona nazwa znika, nowa dolacza na koniec.
+
+Odstepstwa: tylko globale (lokalne i `static` w funkcji zyja w ramce i nie ma
+czego pilnowac miedzy wywolaniami), tablice przez pierwsze 16 elementow + `+N`,
+obiekty biblioteczne jako nazwa klasy. Odkryte przy okazji, NIE naprawione:
+`int buf[40] = {0};` daje mase 1-elementowa (C wypelnia do 40) - rozmiar bierze
+sie z listy inicjujacej, nie z deklaracji.
+
+Weryfikacja: `tests/variables.test.ts` (10) + `tests/vars-panel.test.ts` (18)
+red -> green, `scripts/verify18.mjs` w prawdziwym Chromium (13 asercji:
+domyślne wszystkie, zywe wartosci, chowanie, reload z zapisana preferencja,
+show na koniec, strzalki, reset) + zrzut ekranu.
+
+---
 # Dziennik zmian implementacji
+- 2026-09-25 | V1 podglad zmiennych w GUI (commit V1) | tests/variables.test.ts 10x + tests/vars-panel.test.ts 18x red -> green; suite 654/654; verify18.mjs 13/13 w Chromium | zakladka Variables obok HTTP: globale na zywo, kolejnosc strzalkami lub dragiem, chowanie i przywracanie, layout w localStorage; rdzen: `watchables()`/`machine.variables()`, puste przed `run()`.
 - 2026-09-25 | Przegląd metodą: dokumentacja vs kod | 626/626 | README "Known limitations" opisalo piec rzeczy, ktorych nie mialo w nim byc: delay() w ISR (emulator wykonuje, sprzet wiesza), stany zakazane... zamiast tego: EEPROM (zuzycie 100k cykli liczy sie od F2.2, bullet byl starszy), ADC pływajacy = 0, limit 120 ramek rekurencji, show() NeoPixel bez kosztu czasowego. Zweryfikowane sondu, zero zmian w rdzeniu.
 - 2026-09-25 | N6 bench wielomaszynowy (commit F6) | tests/multi-machine.test.ts 9x green; suite 626/626 | hub + klient + 2 poszkodowanych kolegow; bench kreci zegar klienta, wiec zegar kolegi = czas, ktory kosztowal; odstep rundy dokladnie 400+1500+20 ms; dwa przebiegi identyczne; tykanie wszystkich naraz bez re-entrancji; mutacje rdzenia wywoluja 6/9 bledow.
 - 2026-09-25 | N5 probe na stany zakazane (commit F5) | tests/invariants.test.ts 11x red -> green; suite 617/617 | `addPinInvariant({never,label})` sprawdzany w `digitalWrite` i po kazdym `resolveCircuit()`; wpis raz na epizod (timestamp + stan pinow), kasowany przy reboocie; `invariantStrict` rzuca i `advance()` przepuszcza blad dalej; licznik w toolbarze.

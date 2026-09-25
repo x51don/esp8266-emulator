@@ -26,7 +26,13 @@ import {
 } from './registers';
 import { GpioBus, PIN_INPUT, PIN_OUTPUT, PIN_INPUT_PULLUP } from '../peripherals/gpio';
 import { Netlist, PIN_MAX_MA, type ResolveResult } from '../peripherals/netlist';
-import { Interpreter, type SketchGen, type HostResult, type HostValue } from './sketch/interp';
+import {
+  Interpreter,
+  type SketchGen,
+  type SketchVar,
+  type HostResult,
+  type HostValue,
+} from './sketch/interp';
 import { parse } from './sketch/parser';
 import { getBoard } from './boards';
 import {
@@ -525,6 +531,16 @@ export class Esp8266Machine implements LanHost {
 
   phase(): MachinePhase {
     return this.machinePhase;
+  }
+
+  /**
+   * The sketch's globals as they read right now, for the watch panel. Empty
+   * until a sketch has been started: before that the initializers have not
+   * run, and inventing values here would show the panel something the chip
+   * does not hold. Reading them does not disturb the program.
+   */
+  variables(): SketchVar[] {
+    return this.interp?.watchables() ?? [];
   }
 
   /** Boot mode the ROM latched at the last reset release. */

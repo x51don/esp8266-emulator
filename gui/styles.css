@@ -341,6 +341,103 @@ body {
   text-transform: none;
 }
 
+/* ---------- variables (watch panel) ---------- */
+
+.vars-panel {
+  flex: 1 1 42%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--edge);
+}
+
+.vars-body {
+  flex: 1;
+  overflow-y: auto;
+  background: #05080c;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 0 8px;
+}
+
+.vars-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) 110px minmax(140px, 1.5fr) 132px;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 10px;
+  border-left: 2px solid transparent;
+}
+
+.vars-row:hover {
+  background: #0b1220;
+}
+
+.vars-row[draggable='true'] {
+  cursor: ns-resize;
+}
+
+.vars-changed {
+  background: rgba(46, 230, 168, 0.09);
+  border-left-color: var(--accent-dim);
+}
+
+.vars-name {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vars-type {
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vars-value {
+  color: var(--accent);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.vars-const {
+  color: var(--dim);
+  font-style: italic;
+}
+
+.vars-off {
+  opacity: 0.45;
+}
+
+.vars-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 3px;
+}
+
+.vars-btns .mini-btn {
+  padding: 0 5px;
+  font-size: 10px;
+}
+
+.vars-btns .mini-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.vars-count {
+  color: var(--dim);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.vars-empty {
+  color: var(--dim);
+  padding: 6px 10px;
+}
+
 /* ---- sketch panel .ino file buttons (F13) ---- */
 .sketch-file-btns {
   margin-left: auto;

@@ -103,6 +103,15 @@ against a stale copy (a test that passes on old firmware proves nothing).
    animate from the machine state; the relay contact arm follows its coil. Stop freezes; Reset
    is a cold chip reset. Faults (shorts, bus contention, burnt LEDs) appear in
    the toolbar banner.
+   Under the editor the dock has three tabs: **Serial**, **HTTP** and
+   **Variables**. Variables lists the sketch's globals live - name, type as
+   written, current value - and the row lights up on the poll it changed.
+   Everything shows by default; **hide** takes one out, the checkbox in the
+   panel header lists what is hidden and **show** puts it back at the end,
+   arrows (or dragging a row) set the order, **reset** returns declaration
+   order with nothing hidden. The layout is per-bench, stored with the rest
+   of the state, and follows the sketch: a global the sketch gained joins at
+   the end, one it lost disappears.
 5. **Two chips, one LAN** - the device bar under the toolbar is the bench:
    `+` adds a second ESP8266 (`esp-2 .43`, `esp-3` ...), each chip keeps its
    **own sketch, flash and serial log**; click a chip to drive it. Chips talk
@@ -119,7 +128,8 @@ against a stale copy (a test that passes on old firmware proves nothing).
    back (older single-device projects load fine and become one-chip benches).
    Everything also autosaves to localStorage. `window.__emu` exposes the live
    model (schematic, machine, `setSketch`, `devices`, `addDevice`,
-   `switchDevice`, `wirePath`) for console debugging and browser automation.
+   `switchDevice`, `variables`, `wirePath`) for console debugging and browser
+   automation.
 
 ## How it simulates
 
@@ -203,6 +213,14 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
   episode, cleared by a reboot - and count up in the toolbar;
   `invariantStrict = true` throws instead of logging. Probes come from a test
   or the `__emu` console, there is no dialog for them.
+- The Variables tab watches **globals only**. A function's locals and its
+  `static` locals live in the call frame that owns them and are gone between
+  calls, so there is nothing to list while the sketch is parked in another
+  function; the same goes for a value held behind a pointer. Arrays report
+  their first 16 elements plus a `+N` count, and a library object reports its
+  class (`HTTPClient`), not its internals. Values are read between steps, so
+  a row shows the last committed value, never one torn out of the middle of
+  an expression.
 - EEPROM is a 4096-byte array behind a volatile mirror: `begin()` reloads the
   flash, `write()` dirties the mirror, only `commit()` spends one erase/write
   of the sector, and past 100000 cycles the sector stops persisting anything

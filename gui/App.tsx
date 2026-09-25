@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Esp8266Machine, type SerialLine } from '../core/machine';
+import type { SketchVar } from '../core/sketch/interp';
 import { listBoards } from '../core/boards';
 import { Schematic } from './canvas/schematic';
 import { downloadText, inoFileName } from './fileio';
@@ -10,6 +11,11 @@ import { ComponentDialog } from './components/ComponentDialog';
 import { CodeEditor } from './components/CodeEditor';
 import { SerialMonitor } from './components/SerialMonitor';
 import { HttpPanel } from './components/HttpPanel';
+import {
+  parseVarPref,
+  VariablesPanel,
+  type VarPref,
+} from './components/VariablesPanel';
 import { Toolbar } from './components/Toolbar';
 import { EXAMPLE_NAMES, EXAMPLE_SKETCHES, loadExample } from './examples';
 import { buildFromPlan, planFromSketch } from './autowire';
@@ -36,6 +42,7 @@ const LS = {
   board: 'esp8266-emu.board',
   project: 'esp8266-emu.openProject',
   sketchName: 'esp8266-emu.sketchName',
+  vars: 'esp8266-emu.vars',
 };
 
 /** F10: every device is one Esp8266Machine on the shared virtual LAN. */
@@ -109,7 +116,12 @@ export function App() {
   const [projects, setProjects] = useState<string[]>(() => store.list());
   const [machine, setMachine] = useState(() => new Esp8266Machine({ board: boardId, ip: '192.168.1.42' }));
   const canvasApi = useRef<CanvasHandles | null>(null);
-  const [bottomTab, setBottomTab] = useState<'serial' | 'http'>('serial');
+  const [bottomTab, setBottomTab] = useState<'serial' | 'http' | 'vars'>('serial');
+  /** Watch panel: the globals as of the last poll, and the user's layout. */
+  const [vars, setVars] = useState<readonly SketchVar[]>([]);
+  const [varPref, setVarPref] = useState<VarPref>(() =>
+    parseVarPref(localStorage.getItem(LS.vars)),
+  );
   /** F6: EEPROM contents to plant into the next machine (project load) */
   const pendingEeprom = useRef<Uint8Array | null>(null);
   /** F11: per-device flashes to plant at creation (project load, ids are fresh) */
@@ -577,6 +589,32 @@ export function App() {
     return () => window.clearInterval(id);
   }, [running, machine]);
 
+  // ---- watch panel poll ----
+  // Reads the globals off the interpreter; a stopped machine keeps reporting
+  // its last values, so the list stays readable after Stop. The snapshot is
+  // compared as text to keep a paused bench from re-rendering every 300 ms.
+  const varSnap = useRef('');
+  useEffect(() => {
+    const read = () => {
+      const next = machine.variables();
+      const key = JSON.stringify(next);
+      if (key === varSnap.current) return;
+      varSnap.current = key;
+      setVars(next);
+    };
+    read();
+    const id = window.setInterval(read, 300);
+    return () => window.clearInterval(id);
+  }, [machine]);
+
+  const onVarPref = useCallback(
+    (next: VarPref) => {
+      setVarPref(next);
+      safeStore(LS.vars, JSON.stringify(next));
+    },
+    [safeStore],
+  );
+
   // Debug/automation hook: the whole model is reachable from the console.
   useEffect(() => {
     (window as unknown as Record<string, unknown>).__emu = {
@@ -589,6 +627,8 @@ export function App() {
       },
       setSketch,
       sketch: () => sketchesRef.current.get(activeRef.current) ?? '',
+      /** Globals of the active machine, as the Variables panel reads them. */
+      variables: () => machineRef.current.variables(),
       // the bench from state; a device gets its machine at first activation
       devices: () =>
         devicesState.current.map((d) => {
@@ -740,9 +780,18 @@ export function App() {
             >
               HTTP
             </button>
+            <button
+              className={`dock-tab${bottomTab === 'vars' ? ' active' : ''}`}
+              onClick={() => setBottomTab('vars')}
+              title="the sketch's global variables, live"
+            >
+              Variables
+            </button>
           </div>
           {bottomTab === 'serial' ? (
             <SerialMonitor lines={serialLines} onClear={() => setSerialLines([])} />
+          ) : bottomTab === 'vars' ? (
+            <VariablesPanel vars={vars} pref={varPref} onPref={onVarPref} running={running} />
           ) : (
             <HttpPanel
               ip={machine.ip}

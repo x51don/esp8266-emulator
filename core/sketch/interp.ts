@@ -270,6 +270,52 @@ function typeIsString(typeName: string): boolean {
 
 export type SketchGen = Generator<Pause, void, HostValue | undefined>;
 
+/**
+ * One global as the GUI's watch panel sees it: the name, the type as it was
+ * written, and the value the sketch holds right now. Arrays report their
+ * length plus a capped head of elements; library objects report their class
+ * instead of the internal `@Type:args` token they live as.
+ */
+export interface SketchVar {
+  name: string;
+  type: string;
+  kind: 'number' | 'string' | 'array' | 'object' | 'void';
+  value: number | string | null;
+  isConst: boolean;
+  length?: number;
+  elements?: (number | string)[];
+  object?: string;
+}
+
+/** How many leading elements of an array the watch panel is shown. */
+const WATCH_ELEMENT_CAP = 16;
+
+function describeVar(name: string, type: string, v: Val): SketchVar {
+  const base = { name, type, isConst: v.const === true };
+  switch (v.k) {
+    case 'n':
+      return { ...base, kind: 'number', value: v.v };
+    case 's': {
+      const obj = /^@([A-Za-z_]\w*):/.exec(v.v);
+      return obj
+        ? { ...base, kind: 'object', value: null, object: obj[1] }
+        : { ...base, kind: 'string', value: v.v };
+    }
+    case 'a':
+      return {
+        ...base,
+        kind: 'array',
+        value: null,
+        length: v.v.length,
+        elements: v.v
+          .slice(0, WATCH_ELEMENT_CAP)
+          .map((e) => (e.k === 'n' || e.k === 's' ? e.v : 0)),
+      };
+    default:
+      return { ...base, kind: 'void', value: null };
+  }
+}
+
 export class Interpreter {
   private funcs = new Map<string, FuncInstance>();
   private globals: Scope = { vars: new Map() };
@@ -300,6 +346,24 @@ export class Interpreter {
         this.globals.vars.set(d.name, v);
       }
     }
+  }
+
+  /**
+   * Live snapshot of the globals for the watch panel, in declaration order.
+   * Globals only: a function's locals and statics are not visible from the
+   * outside. A global whose initializer has not run yet - a sketch that was
+   * loaded but never started - has no value, so it is not reported.
+   */
+  watchables(): SketchVar[] {
+    const out: SketchVar[] = [];
+    for (const g of this.program.globals) {
+      if (g.kind !== 'VarDecl') continue;
+      for (const d of g.decls) {
+        const v = this.globals.vars.get(d.name);
+        if (v) out.push(describeVar(d.name, g.type, v));
+      }
+    }
+    return out;
   }
 
   /** WiFi mock instances are opaque tokens; the machine tracks their state. */
