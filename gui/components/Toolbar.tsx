@@ -28,6 +28,10 @@ interface Props {
   onAutowire: () => void;
   error: string | null;
   fault: string | null;
+  /** F5: counter for violated pin invariants, e.g. "2 violations". */
+  invariants: string | null;
+  /** Multi-line detail for the tooltip: one violated rule per line. */
+  invariantDetail: string;
 }
 
 export function Toolbar(p: Props) {
@@ -121,6 +125,11 @@ export function Toolbar(p: Props) {
       <span className="spacer" />
       {p.error && <span className="banner banner-error" title={p.error}>⚠ {p.error}</span>}
       {!p.error && p.fault && <span className="banner banner-fault" title={p.fault}>⚡ {p.fault}</span>}
+      {p.invariants && (
+        <span className="banner banner-invariant" title={p.invariantDetail}>
+          &#128737; {p.invariants}
+        </span>
+      )}
     </div>
   );
 }

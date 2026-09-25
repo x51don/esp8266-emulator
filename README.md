@@ -179,6 +179,15 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
   a plain µs counter; only the sketch sees the wrap. `setUptimeUs(us)` boots
   the chip near the boundary so a test does not wait 49.7 days; it is a
   harness setting and survives `run()`/`reset()`. `long long` is not 64-bit.
+- An impossible pin state is simulated as written until a probe says
+  otherwise: `addPinInvariant({ never: [['D5', 1], ['D6', 1]], label })`
+  states the combination that must never happen (never both windings ON). The
+  machine evaluates it on every `digitalWrite` and every `advance()` step, so
+  it does not matter whether the sketch, an ISR or the circuit moved the pin.
+  Hits land in `invariantViolations` as `{ tMs, label, pins }` - one entry per
+  episode, cleared by a reboot - and count up in the toolbar;
+  `invariantStrict = true` throws instead of logging. Probes come from a test
+  or the `__emu` console, there is no dialog for them.
 - EEPROM is a 4096-byte byte array (no wear leveling, no page-size errors);
   `commit()` marks it dirty, which drives the project autosave.
 - `configTime` locks to the **wall-clock** epoch plus virtual time since

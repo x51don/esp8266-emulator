@@ -73,6 +73,16 @@ export function resolveBoardId(saved: string | null): string {
   return fallback;
 }
 
+/**
+ * F5 (repair 5/6): the toolbar counter for violated pin invariants. Probes are
+ * attached from a test or the console (__emu.machine.addPinInvariant); the GUI
+ * reports what they caught. Null keeps the toolbar clean.
+ */
+export function invariantBadge(count: number): string | null {
+  if (count <= 0) return null;
+  return `${count} violation${count === 1 ? '' : 's'}`;
+}
+
 export function App() {
   const [boardId, setBoardId] = useState<string>(
     () => resolveBoardId(localStorage.getItem(LS.board)),
@@ -89,6 +99,8 @@ export function App() {
   const [serialLines, setSerialLines] = useState<readonly SerialLine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [fault, setFault] = useState<string | null>(null);
+  const [invariants, setInvariants] = useState<string | null>(null);
+  const [invariantDetail, setInvariantDetail] = useState('');
   const [configureId, setConfigureId] = useState<string | null>(null);
 
   const [schematic, setSchematic] = useState<Schematic>(loadSchematic);
@@ -546,11 +558,21 @@ export function App() {
   useEffect(() => {
     if (!running) {
       setFault(null);
+      setInvariants(null);
       return;
     }
     const id = window.setInterval(() => {
       const f = machine.circuit().faults;
       setFault(f.length ? `${f[0].message}${f.length > 1 ? ` (+${f.length - 1} more)` : ''}` : null);
+      // F5: the invariant probes the harness attached to this machine
+      const v = machine.invariantViolations;
+      setInvariants(invariantBadge(v.length));
+      setInvariantDetail(
+        v
+          .slice(-8)
+          .map((x) => `${x.tMs} ms ${x.label}: ${x.pins.map((q) => `${q.pin}=${q.value}`).join(' ')}`)
+          .join('\n'),
+      );
     }, 250);
     return () => window.clearInterval(id);
   }, [running, machine]);
@@ -622,6 +644,8 @@ export function App() {
         onAutowire={onAutowire}
         error={error}
         fault={fault}
+        invariants={invariants}
+        invariantDetail={invariantDetail}
       />
       <div className="device-bar">
         {devices.map((d) => (

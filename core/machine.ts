@@ -29,6 +29,10 @@ import { Netlist, PIN_MAX_MA, type ResolveResult } from '../peripherals/netlist'
 import { Interpreter, type SketchGen, type HostResult, type HostValue } from './sketch/interp';
 import { parse } from './sketch/parser';
 import { getBoard } from './boards';
+import {
+  matchPinInvariant, PinInvariantError,
+  type PinInvariant, type PinInvariantViolation,
+} from './invariants';
 
 /**
  * ESP8266EX 10-bit SAR transfer [DS]: saturates at the native full scale
@@ -144,6 +148,14 @@ export class Esp8266Machine implements LanHost {
   private boot: BootMode = 'flash';
   /** F1.2: accumulated per-GPIO overcurrent stress in ms (damage at 1000). */
   private pinStress = new Map<number, number>();
+  /** F5 (repair 5/6): probes for states the hardware must never reach. */
+  readonly pinInvariants: PinInvariant[] = [];
+  /** F5: what the probes caught since this boot, oldest first. */
+  readonly invariantViolations: PinInvariantViolation[] = [];
+  /** F5: a violation throws instead of only being recorded. */
+  invariantStrict = false;
+  /** F5: rules that already hold, so one episode is one log entry. */
+  private invariantHeld = new Map<PinInvariant, boolean>();
   private cpuTask: TimerId | null = null;
   private isrTask: TimerId | null = null;
   private alarms = new Map<number, Alarm>();
@@ -352,6 +364,8 @@ export class Esp8266Machine implements LanHost {
     this.registers.reset();
     this.gpio.reset();
     this.pinStress.clear(); // fresh electrical conditions (damage persists)
+    this.invariantViolations.length = 0; // F5: a new boot is a new observation
+    this.invariantHeld.clear();
     this.netlist.resetTime(); // pending button chatter dies with the run
     this.interruptsEnabled = true; // a reboot re-enables the interrupt controller
     this.eepromImage = null; // RAM mirror is volatile; setup() re-begins it
@@ -422,6 +436,8 @@ export class Esp8266Machine implements LanHost {
     this.registers.reset();
     this.gpio.reset();
     this.pinStress.clear();
+    this.invariantViolations.length = 0; // F5: a new boot is a new observation
+    this.invariantHeld.clear();
     this.netlist.resetTime();
     this.alarms.clear();
     this.serialLog = [];
@@ -451,6 +467,9 @@ export class Esp8266Machine implements LanHost {
     try {
       this.clock.advance(ms * 1000);
     } catch (e) {
+      // F5: an invariant violation is a harness verdict, not a sketch bug, so
+      // strict mode lets it escape advance() instead of faulting the machine.
+      if (e instanceof PinInvariantError) throw e;
       this.fault(e instanceof Error ? e.message : String(e));
     } finally {
       this.yieldBudget = -1;
@@ -467,6 +486,7 @@ export class Esp8266Machine implements LanHost {
       return;
     }
     this.resolveCircuit();
+    this.checkPinInvariants(); // F5: the circuit may have moved a pin, not a write
     this.accumulatePinStress(Math.round(ms * 1000) / 1000); // F1.2
   }
 
@@ -533,6 +553,54 @@ export class Esp8266Machine implements LanHost {
 
   pinLevel(gpio: number): 0 | 1 {
     return this.gpio.read(gpio);
+  }
+
+  /**
+   * F5 (repair 5/6): forbid a combination of pin levels, e.g. never both
+   * half-bridge inputs HIGH at once. The machine evaluates the rule on every
+   * digitalWrite and on every step of advance(), so it does not matter who
+   * drove the pin - the sketch, an ISR or the circuit. A violation is
+   * appended to invariantViolations once per episode (staying in the forbidden
+   * state does not flood the log); with invariantStrict it throws instead.
+   */
+  addPinInvariant(rule: PinInvariant): void {
+    if (!rule || !Array.isArray(rule.never) || rule.never.length === 0)
+      throw new Error('addPinInvariant: never must list at least one [pin, level] pair');
+    if (!rule.label) throw new Error('addPinInvariant: every invariant needs a label');
+    this.pinInvariants.push(rule);
+  }
+
+  /** Drop the probe with this label; the violations it found stay logged. */
+  removePinInvariant(label: string): void {
+    const i = this.pinInvariants.findIndex((r) => r.label === label);
+    if (i >= 0) this.invariantHeld.delete(this.pinInvariants.splice(i, 1)[0]);
+  }
+
+  clearPinInvariants(): void {
+    this.pinInvariants.length = 0;
+    this.invariantHeld.clear();
+  }
+
+  /** Evaluate every probe against the pins as they are right now. */
+  checkPinInvariants(): void {
+    if (this.pinInvariants.length === 0) return;
+    const board = getBoard(this.boardId);
+    const tMs = Math.floor(this.clock.now() / 1000);
+    for (const rule of this.pinInvariants) {
+      const hit = matchPinInvariant(rule, {
+        level: (g) => this.pinLevel(g),
+        gpioFor: (ref) => board.gpioFor(ref),
+        tMs,
+      });
+      if (!hit) {
+        this.invariantHeld.set(rule, false); // released: the next hit is a new episode
+        continue;
+      }
+      if (this.invariantHeld.get(rule) === true) continue;
+      this.invariantHeld.set(rule, true);
+      if (this.invariantStrict) throw new PinInvariantError(hit);
+      this.invariantViolations.push(hit);
+    }
   }
 
   pwm(gpio: number): number {
@@ -1577,6 +1645,7 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
             const level = num(args[1]) ? 1 : 0;
             // route through the register file like real firmware does
             this.registers.write(level ? GPIO_OUT_W1TS : GPIO_OUT_W1TC, 1 << g);
+            this.checkPinInvariants(); // F5: catch the forbidden combination now
             return { value: 0 };
           }
           case 'attachInterrupt': {

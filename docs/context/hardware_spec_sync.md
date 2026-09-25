@@ -577,7 +577,44 @@ porownanie `signed` z `unsigned` liczy sie jak w C na double, nie przez
 konwersje znaku; GUI nie ma kontrolki uplywu czasu (API testowe wystarcza).
 
 ---
+# N5 Probe na stany zakazane (naprawa 5 z 6, commit F5)
+
+**Spec.** Emulator symulowal stan, ktorego fizyka nie pozwala przezyc: szkic
+trzymajacy oba wejscia polmostka w HIGH dostawal dokladnie to, co napisal -
+zwarcie uzwojen do masy - i nic o tym nie mowilo, choc prad pinu byl liczony.
+Brakowalo sposobu, zeby powiedziec emulatorowi "ten stan nigdy nie ma prawa
+wystapic" i dostac dowod, kiedy jednak wystapil.
+
+**Status: DONE** (2026-09-25; 617 testow).
+
+**Kod.** `core/invariants.ts` (nowy plik, czysta logika): `PinInvariant`
+(`never: [[pin, poziom], ...]` + `label`), `matchPinInvariant()` zwraca
+naruszenie albo null, `PinInvariantError` z gotowym komunikatem. Maszyna trzyma
+`pinInvariants`, `invariantViolations` i flage `invariantStrict`;
+`checkPinInvariants()` wywolywane jest z `case 'digitalWrite'` (natychmiast po
+zapisie rejestru) oraz z `advance()` zaraz po `resolveCircuit()`, wiec probe
+widzi rowniez pin poruszony przez uklad, nie tylko przez szkic. Nazwy pinow
+idza przez `board.gpioFor()`, wiec dziennik mowi `D5`, a nie `14`; nazwa
+nieznana nie pasuje nigdy. Wpis idzie raz na epizod (flaga `held`) -
+trzymanie stanu przez sekunde nie generuje tysiaca rekordow - i kasuje sie przy
+reboocie, bo to okno obserwacji, nie stan czipu. `invariantStrict` rzuca
+`PinInvariantError`; `advance()` przepuszcza ten blad dalej (nie jest to blad
+szkicu, wiec nie zmienia maszyny w `fault`). GUI: licznik w toolbarze
+(`invariantBadge()` w App.tsx + `.banner-invariant`), ten sam interwal 250 ms
+co banner zwarc; probe przypina sie z testu albo z konsoli `__emu`.
+Testy: `tests/invariants.test.ts` (11: moment naruszenia z timestampem 250 ms;
+cisza, gdy reguta nie zachodzi; jeden wpis na epizod; probe dolozony do juz
+zlamanego stanu lapie nastepny krok zegara; strict rzuca i nie kolekcjonuje;
+numer GPIO i 'GPIO12' obok 'D5'; nieistniejacy pin; reguta na LOW; zdjecie
+probu; czyszczenie przy reboocie; licznik GUI).
+
+Odstepstwa od sprzetu (wpisane do README): probe to przyrzad harnessu, nie
+sprzetu - emulator sam z siebie zaden stan nie zabrania (zwarcie nadal plynie);
+brak okna dialogowego do definiowania regul, zostaje konsola `__emu`.
+
+---
 # Dziennik zmian implementacji
+- 2026-09-25 | N5 probe na stany zakazane (commit F5) | tests/invariants.test.ts 11x red -> green; suite 617/617 | `addPinInvariant({never,label})` sprawdzany w `digitalWrite` i po kazdym `resolveCircuit()`; wpis raz na epizod (timestamp + stan pinow), kasowany przy reboocie; `invariantStrict` rzuca i `advance()` przepuszcza blad dalej; licznik w toolbarze.
 - 2026-09-25 | N4 32-bitowy uplyw czasu (commit F4) | tests/millis-wrap.test.ts 10x red -> green; suite 606/606 | `millis`/`micros` maskowane `% 2**32` tylko na granicy `env()` (zegar wewnetrznie pelnym µs); `Clock.setNow` + `setUptimeUs` = start przy granicy zamiast czekania 49.7 dnia; `intKindOf`/`stampType`/`wrapInt` daja deklarowanym typom ich sprzetowa szerokosc (bez tego `unsigned long` nie miescil millis()); arytmetyka bezznakovowa zawija sie, `>>` logiczny; parametry skalarnie przez wartosc.
 - 2026-09-25 | N3 znikajacy punkt dostepowy (commit F3) | tests/wifi-down.test.ts 10x red -> green; suite 596/596 | `setWifiDown` to stan srodowiska (przezywa run/restart); `staUp()` jedynym source of truth lacza; `HostResult.again` = parkuj i wywolaj ponownie (jedno `env.call`); `waitForConnectResult` zwraca 6 po wlasnym timeout zamiast wieszac interpreter; przy awarii czip nie obsluguje LAN.
 - 2026-09-25 | N2 latencja/awarie kolegi w LAN (commit F2) | tests/net-impair.test.ts 10x red -> green; suite 586/586 | wady lacza w `Lan` per host, przezywa restart kolegi, kasowane przy unregister; `elapsed` liczony z wady lacza a nie z iteracji pumpa; suspend przesuwa zegar klienta; zdrowe lacze wciaz 0 ms; unregistered host wciaz -1 natychmiast (udokumentowane).
