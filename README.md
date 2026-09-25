@@ -170,6 +170,15 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
   wedging the interpreter. Handing the AP back costs a fresh association
   (1.5 s) or AP bring-up (300 ms). The outage is an environment condition,
   not chip state: it survives `run()` and `ESP.restart()`.
+- `millis()` and `micros()` are uint32 and roll over (49.7 days and 71.6
+  minutes), and a declared integer type keeps its hardware width: `byte`
+  wraps at 256, `word` at 65536, `char` is signed, `unsigned long` holds
+  4294967295, and arithmetic with an unsigned operand wraps unsigned - which
+  is what makes `millis() - previous >= interval` survive the rollover while
+  `millis() >= previous + interval` does not. The virtual clock itself stays
+  a plain µs counter; only the sketch sees the wrap. `setUptimeUs(us)` boots
+  the chip near the boundary so a test does not wait 49.7 days; it is a
+  harness setting and survives `run()`/`reset()`. `long long` is not 64-bit.
 - EEPROM is a 4096-byte byte array (no wear leveling, no page-size errors);
   `commit()` marks it dirty, which drives the project autosave.
 - `configTime` locks to the **wall-clock** epoch plus virtual time since

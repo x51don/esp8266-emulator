@@ -380,7 +380,7 @@ oba wymuszone przez istniejące kontrakty:
    localIP 0.0.0.0 (test 'IP address: 192.168.1.150').
 2. Serwery LAN NIE są bramowane stanem radia (plan zakładał
    begin() po joinie). Kontrakty web-f5/examples: ser.begin() bez
-   żadnego WiFi i obsługa żądań - 20+ testów. softAPIP() za to
+   zadnego WiFi i obsługa żądań - 20+ testów. softAPIP() za to
    oddaje 0.0.0.0 gdy AP leży (testowalne życie interfejsu).
 softAPgetStationNum() = 0 (klientów AP nie symulujemy).
 Testy: tests/wifi-ap.test.ts (6).
@@ -537,7 +537,48 @@ timeout; panel HTTP milczy; kryterium: blink+HTTP miga przez cala awarie i po
 powrocie AP drukuje link 1, IP i http 200).
 
 ---
+# N4 32-bitowy uplyw czasu (naprawa 4 z 6, commit F4)
+
+**Spec.** `millis()` i `micros()` zwracaly nieskonczone `double` - licznik
+czipu nigdy sie nie przepeinia, wiec klasyczny bug "po 49 dniach stanelo" byl
+w emulatorze niewidoczny, a cala szkola `millis() - t0 >= X` nie miala
+zadnego sensu do sprawdzenia. Glebiej lezal drugi blad: interpreter obcinal
+kazda liczbe cala do `int32` przy przypisaniu, wiec `unsigned long t = millis();`
+dawal -1500 zamiast 4294965796 - gorna polowa zakresu byla po prostu
+nieosiagalna.
+
+**Status: DONE** (2026-09-25; 606 testow).
+
+**Kod.** `Clock.setNow(us)` przesuwa zegar bez odpalania timerow, a
+`Esp8266Machine.setUptimeUs(us)` ustawia moment startu (nakladany po obu
+`clock.restart()`, wiec przezywa `run()` i `reset()`) - to jedyny sposob, zeby
+test nie czekal 49.7 dnia. Maska `% 2**32` stoi WYLACZNIE na granicy `env()`
+(`millis`, `micros`); wewnatrz emulatora zegar zostaje pelnym licznikiem µs,
+zeby `delay`, WDT i latencja LAN nie gubily precyzji.
+Szerokosci typow sa teraz deklarowane: `intKindOf()` (interp.ts) z nazwy typu
+liczy szerokosc i znak, `stampType()` wbija je w nowa komorke (deklaracje
+globalna, lokalna, statyczna, parametr), `assignInto()` zawija wartosc do
+szerokosci celu (`byte` 8 bitow, `word` 16, `unsigned long` 32 bez znaku), a
+`operandsAreUnsigned()` sprawia, ze arytmetyka z operandem bez znaku tez sie
+zawija - stad `millis() - t0` przez granice daje 1500, a nie -4294965296.
+`>>` na wartosci bez znaku jest logiczny, na znakowej arytmetyczny. `millis()` i
+`micros()` zwracaja wartosc unsigned, tak jak w rdzeniu. Parametry skalarnie
+sa przez wartosc (kopia komorki); tablice (pointer) i `byRef` wciaz aliasuja.
+Testy: `tests/millis-wrap.test.ts` (10: millis i micros przez granice;
+wlasciwa arytmetyka modularna tyka rowno 1000 ms rowniez ZA granica;
+`millis() >= t0 + 1000` gubi rytm i strzela seriami - emulator rozroznaje oba
+zachowania; `delay` i scheduler dzialaja przez przepeinienie; start offset
+przezywa reboot; szerokosci `byte`/`word`/`char`/`unsigned long`/`int`;
+licznik `byte` przez 255; `100 - 200` w uint32; `>>` logiczny vs znakowy;
+przekazanie przez wartosc).
+
+Odstepstwa od sprzetu (wpisane do README): `long long` wciaz 32 bity;
+porownanie `signed` z `unsigned` liczy sie jak w C na double, nie przez
+konwersje znaku; GUI nie ma kontrolki uplywu czasu (API testowe wystarcza).
+
+---
 # Dziennik zmian implementacji
+- 2026-09-25 | N4 32-bitowy uplyw czasu (commit F4) | tests/millis-wrap.test.ts 10x red -> green; suite 606/606 | `millis`/`micros` maskowane `% 2**32` tylko na granicy `env()` (zegar wewnetrznie pelnym µs); `Clock.setNow` + `setUptimeUs` = start przy granicy zamiast czekania 49.7 dnia; `intKindOf`/`stampType`/`wrapInt` daja deklarowanym typom ich sprzetowa szerokosc (bez tego `unsigned long` nie miescil millis()); arytmetyka bezznakovowa zawija sie, `>>` logiczny; parametry skalarnie przez wartosc.
 - 2026-09-25 | N3 znikajacy punkt dostepowy (commit F3) | tests/wifi-down.test.ts 10x red -> green; suite 596/596 | `setWifiDown` to stan srodowiska (przezywa run/restart); `staUp()` jedynym source of truth lacza; `HostResult.again` = parkuj i wywolaj ponownie (jedno `env.call`); `waitForConnectResult` zwraca 6 po wlasnym timeout zamiast wieszac interpreter; przy awarii czip nie obsluguje LAN.
 - 2026-09-25 | N2 latencja/awarie kolegi w LAN (commit F2) | tests/net-impair.test.ts 10x red -> green; suite 586/586 | wady lacza w `Lan` per host, przezywa restart kolegi, kasowane przy unregister; `elapsed` liczony z wady lacza a nie z iteracji pumpa; suspend przesuwa zegar klienta; zdrowe lacze wciaz 0 ms; unregistered host wciaz -1 natychmiast (udokumentowane).
 - 2026-09-25 | N1 kopie examples/*.ino + straznik (commit F1) | tests/examples-sync.test.ts 7x red -> green; suite 576/576 | kopia v20 rozjechana ze zrodlem o 89 linii wobec zielonego suite; manifest seedowany hashem KOPII; `pretest` = `sync-examples --check`; +@types/node (typecheck nie widzial node:*).

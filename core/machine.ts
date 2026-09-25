@@ -122,6 +122,14 @@ interface LibObj {
 
 export class Esp8266Machine implements LanHost {
   readonly clock = new Clock();
+  /**
+   * F4 (repair 4/6): where the virtual clock starts, in µs. millis() and
+   * micros() are uint32 counters, so the only practical way to exercise the
+   * 49.7-day rollover is to boot the chip with the counter already near the
+   * boundary. It is a harness setting, not chip state: run() and reset()
+   * boot at the same instant until it is changed.
+   */
+  private uptimeUs = 0;
   readonly registers: GpioRegisters;
   readonly gpio = new GpioBus();
   readonly netlist: Netlist;
@@ -340,6 +348,7 @@ export class Esp8266Machine implements LanHost {
     this.wakeAt = null;
     this.halt();
     this.clock.restart();
+    if (this.uptimeUs) this.clock.setNow(this.uptimeUs); // F4: boot near the wrap
     this.registers.reset();
     this.gpio.reset();
     this.pinStress.clear(); // fresh electrical conditions (damage persists)
@@ -409,6 +418,7 @@ export class Esp8266Machine implements LanHost {
     this.npStrips.clear();
     this.halt();
     this.clock.restart();
+    if (this.uptimeUs) this.clock.setNow(this.uptimeUs); // F4: boot near the wrap
     this.registers.reset();
     this.gpio.reset();
     this.pinStress.clear();
@@ -419,6 +429,18 @@ export class Esp8266Machine implements LanHost {
     this.droppedLines = 0;
     this.machinePhase = 'loaded';
     this.resolveCircuit();
+  }
+
+  /**
+   * F4 (repair 4/6): pretend the chip has already been up for `us`
+   * microseconds. millis()/micros() are uint32, so this is how a test reaches
+   * the 49.7-day rollover without waiting for it. The clock is
+   * moved without firing anything; timers that were already due fire on the
+   * next advance(). run() and reset() boot at this same instant.
+   */
+  setUptimeUs(us: number): void {
+    this.uptimeUs = Math.max(0, Math.floor(us));
+    this.clock.setNow(this.uptimeUs);
   }
 
   /** Advance virtual time by `ms` milliseconds and re-resolve the circuit.
@@ -1535,8 +1557,10 @@ fetchHttp(method: 'GET' | 'POST', url: string, body = ''): HttpResp | null {
 
     return {
       constants,
-      millis: () => Math.floor(this.clock.now() / 1000),
-      micros: () => Math.floor(this.clock.now()),
+      // F4: uint32 counters, exactly like the chip. The clock itself keeps
+      // full precision internally; only the sketch sees the rollover.
+      millis: () => Math.floor(this.clock.now() / 1000) % 4294967296,
+      micros: () => Math.floor(this.clock.now()) % 4294967296,
 
       call: (name: string, args: HostValue[]): HostResult => {
         switch (name) {

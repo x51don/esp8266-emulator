@@ -66,7 +66,7 @@ export class SketchRuntimeError extends Error {
 // ---------- runtime values ----------
 
 type Val =
-  | { k: 'n'; v: number; int: boolean; const?: boolean }
+  | { k: 'n'; v: number; int: boolean; const?: boolean; bits?: number; uns?: boolean }
   | { k: 's'; v: string; const?: boolean }
   | { k: 'a'; v: Val[]; int: boolean; const?: boolean }
   | { k: 'void'; const?: boolean };
@@ -125,6 +125,22 @@ function truthy(v: Val): boolean {
 
 function isIntVal(v: Val): boolean {
   return v.k === 'n' && v.int;
+}
+
+/** F4: a 32-bit unsigned value. Arithmetic that touches one is unsigned too,
+ *  which is what makes `millis() - t0 >= X` survive the rollover. */
+function isUns32(v: Val): boolean {
+  return v.k === 'n' && v.uns === true && (v.bits ?? 32) >= 32;
+}
+
+/** A 32-bit unsigned value that came from the chip rather than a declaration. */
+function uns32Val(v: number): Val {
+  return { k: 'n', v, int: true, bits: 32, uns: true };
+}
+
+/** True when either operand of a binary operator is a 32-bit unsigned. */
+function operandsAreUnsigned(l: Val, r: Val): boolean {
+  return isIntVal(l) && isIntVal(r) && (isUns32(l) || isUns32(r));
 }
 
 function describeVal(v: Val): string {
@@ -217,6 +233,36 @@ export function typeIsInt(typeName: string): boolean {
   return words.some((w) => INT_TYPE_WORDS.has(w));
 }
 
+/**
+ * F4: the hardware width and signedness behind a declared integer type, or
+ * null when the type is not an integer. The interpreter stores numbers as
+ * doubles, so without this an `unsigned long` could not hold a millis() value
+ * in the upper half of its range and the 32-bit rollover was untestable.
+ */
+export function intKindOf(typeName: string): { bits: number; unsigned: boolean } | null {
+  const words = typeName.split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.some((w) => FLOAT_TYPE_WORDS.has(w))) return null;
+  if (!words.every((w) => INT_TYPE_WORDS.has(w))) return null;
+  let bits = 32;
+  let unsigned = words.includes('unsigned');
+  for (const w of words) {
+    if (w === 'char' || w === 'byte' || w === 'int8_t' || w === 'uint8_t') bits = 8;
+    else if (w === 'short' || w === 'word' || w === 'int16_t' || w === 'uint16_t') bits = 16;
+    if (w === 'uint8_t' || w === 'uint16_t' || w === 'uint32_t' || w === 'size_t') unsigned = true;
+    if (w === 'byte' || w === 'word') unsigned = true;
+  }
+  return { bits, unsigned };
+}
+
+/** Wrap a value into a declared integer width the way the ALU does. */
+function wrapInt(n: number, bits: number, unsigned: boolean): number {
+  const v = Math.trunc(n);
+  if (!Number.isFinite(v) || bits >= 53) return v;
+  const span = 2 ** bits;
+  const x = ((v % span) + span) % span;
+  return unsigned || x < span / 2 ? x : x - span;
+}
+
 function typeIsString(typeName: string): boolean {
   const words = typeName.split(/\s+/);
   return words.some((w) => STRING_TYPE_WORDS.has(w)) || typeName.includes('char');
@@ -284,6 +330,10 @@ export class Interpreter {
   ]);
 
   private globalInit(d: Declarator, g: VarDecl): Val {
+    return this.stampType(this.globalInitValue(d, g), g.type);
+  }
+
+  private globalInitValue(d: Declarator, g: VarDecl): Val {
     const tok = this.wifiToken(d, g);
     if (tok) return tok;
     const isIntType = typeIsInt(g.type);
@@ -349,7 +399,10 @@ export class Interpreter {
         const l = this.evalConst(e.left, e.line);
         const r = this.evalConst(e.right, e.line);
         return numVal(
-          this.applyBinary(e.op, asNum(l, e.line), asNum(r, e.line), isIntVal(l) && isIntVal(r), e.line),
+          this.applyBinary(
+            e.op, asNum(l, e.line), asNum(r, e.line), isIntVal(l) && isIntVal(r), e.line,
+            operandsAreUnsigned(l, r),
+          ),
           this.resultIsInt(e.op, l, r),
         );
       }
@@ -393,7 +446,10 @@ export class Interpreter {
       const scope: Scope = { vars: new Map(), parent: this.globals };
       fn.def.params.forEach((p, idx) => {
         const arg = args[idx] ?? numVal(0, true);
-        scope.vars.set(p.name, arg);
+        // Only scalars are by value: arrays are pointers and byRef aliases
+        // the caller's lvalue, so both keep the caller's cell.
+        scope.vars.set(p.name,
+          p.byRef || arg.k !== 'n' ? arg : this.stampType(dup(arg), p.type));
       });
       this.bindStatics(fn, scope);
       const ctrl = yield* this.execList(fn.def.body.body, scope);
@@ -467,6 +523,7 @@ export class Interpreter {
             v = this.localInit(d, stmt, scope);
           }
           if (stmt.isConst) v.const = true;
+          this.stampType(v, stmt.type);
           scope.vars.set(d.name, v);
         }
         return NORMAL;
@@ -570,6 +627,10 @@ export class Interpreter {
    * duplicate cells so variables never share storage. delay() is rejected.
    */
   private localInit(d: Declarator, g: VarDecl, scope: Scope): Val {
+    return this.stampType(this.localInitValue(d, g, scope), g.type);
+  }
+
+  private localInitValue(d: Declarator, g: VarDecl, scope: Scope): Val {
     const tok = this.wifiToken(d, g);
     if (tok) return tok;
     const isIntType = typeIsInt(g.type);
@@ -675,7 +736,10 @@ export class Interpreter {
           return numVal((e.op === '==' ? eq : !eq) ? 1 : 0, true);
         }
         return numVal(
-          this.applyBinary(e.op, asNum(l, e.line), asNum(r, e.line), isIntVal(l) && isIntVal(r), e.line),
+          this.applyBinary(
+            e.op, asNum(l, e.line), asNum(r, e.line), isIntVal(l) && isIntVal(r), e.line,
+            operandsAreUnsigned(l, r),
+          ),
           this.resultIsInt(e.op, l, r),
         );
       }
@@ -730,6 +794,7 @@ export class Interpreter {
           this.applyBinary(
             e.op.slice(0, -1), asNum(cur, e.line), asNum(rhs, e.line),
             isIntVal(cur) && isIntVal(rhs), e.line,
+            operandsAreUnsigned(cur, rhs),
           ),
           this.resultIsInt(e.op.slice(0, -1), cur, rhs),
         );
@@ -747,8 +812,10 @@ export class Interpreter {
         throw new SketchRuntimeError('array literal only allowed in declarations', e.line);
 
       case 'Call': {
-        if (e.callee === 'millis') return numVal(this.env.millis(), true);
-        if (e.callee === 'micros') return numVal(this.env.micros(), true);
+        // F4: both are unsigned long on the chip, so arithmetic that touches
+        // them is unsigned arithmetic, exactly like `millis() - previous`.
+        if (e.callee === 'millis') return uns32Val(this.env.millis());
+        if (e.callee === 'micros') return uns32Val(this.env.micros());
         const args: Val[] = [];
         for (const a of e.args) args.push(yield* this.eval(a, scope));
         // dynamic dispatch: a variable holding a function name (lambdas and
@@ -840,7 +907,11 @@ export class Interpreter {
     }
     try {
       const scope: Scope = { vars: new Map(), parent: this.globals };
-      fn.def.params.forEach((p, idx) => scope.vars.set(p.name, args[idx] ?? numVal(0, true)));
+      fn.def.params.forEach((p, idx) => {
+        const arg = args[idx] ?? numVal(0, true);
+        scope.vars.set(p.name,
+          p.byRef || arg.k !== 'n' ? arg : this.stampType(dup(arg), p.type));
+      });
       this.bindStatics(fn, scope);
       const ctrl = yield* this.execList(fn.def.body.body, scope);
       if (refs) {
@@ -865,7 +936,26 @@ export class Interpreter {
     return isIntVal(l) && isIntVal(r);
   }
 
-  private applyBinary(op: string, l: number, r: number, bothInt: boolean, line: number): number {
+  private applyBinary(
+    op: string,
+    l: number,
+    r: number,
+    bothInt: boolean,
+    line: number,
+    uns = false,
+  ): number {
+    return uns ? wrapInt(this.applyBinaryRaw(op, l, r, bothInt, line, uns), 32, true)
+      : this.applyBinaryRaw(op, l, r, bothInt, line, uns);
+  }
+
+  private applyBinaryRaw(
+    op: string,
+    l: number,
+    r: number,
+    bothInt: boolean,
+    line: number,
+    uns: boolean,
+  ): number {
     switch (op) {
       case '+': return l + r;
       case '-': return l - r;
@@ -877,11 +967,12 @@ export class Interpreter {
         if (r === 0) throw new SketchRuntimeError('modulo by zero', line);
         if (!bothInt) throw new SketchRuntimeError('modulo requires integer operands', line);
         return l % r;
-      case '&': return (l | 0) & (r | 0);
-      case '|': return (l | 0) | (r | 0);
-      case '^': return (l | 0) ^ (r | 0);
-      case '<<': return (l | 0) << (r | 0);
-      case '>>': return (l | 0) >> (r | 0);
+      case '&': return uns ? ((l | 0) & (r | 0)) >>> 0 : (l | 0) & (r | 0);
+      case '|': return uns ? ((l | 0) | (r | 0)) >>> 0 : (l | 0) | (r | 0);
+      case '^': return uns ? ((l | 0) ^ (r | 0)) >>> 0 : (l | 0) ^ (r | 0);
+      case '<<': return uns ? ((l | 0) << (r | 0)) >>> 0 : (l | 0) << (r | 0);
+      // an unsigned shift is logical, a signed one is arithmetic
+      case '>>': return uns ? (l >>> 0) >>> (r | 0) : (l | 0) >> (r | 0);
       case '<': return l < r ? 1 : 0;
       case '>': return l > r ? 1 : 0;
       case '<=': return l <= r ? 1 : 0;
@@ -890,6 +981,22 @@ export class Interpreter {
       case '!=': return l !== r ? 1 : 0;
       default: throw new SketchRuntimeError(`unsupported operator '${op}'`, line);
     }
+  }
+
+  /**
+   * F4: give a freshly declared cell its declared integer width and clamp
+   * the initial value into it, so `unsigned long t = millis();` keeps the
+   * value the chip would keep.
+   */
+  private stampType(v: Val, typeName: string): Val {
+    if (v.k !== 'n') return v;
+    const kind = intKindOf(typeName);
+    if (!kind) return v;
+    v.int = true;
+    v.bits = kind.bits;
+    v.uns = kind.unsigned;
+    v.v = wrapInt(v.v, kind.bits, kind.unsigned);
+    return v;
   }
 
   private castTo(typeName: string, v: Val, line: number): Val {
@@ -934,10 +1041,17 @@ export class Interpreter {
     throw new SketchRuntimeError('cannot assign to this expression', line);
   }
 
-  /** Assignment keeps the destination's type: int cells truncate floats. */
+  /** Assignment keeps the destination's type: int cells truncate floats and
+   *  wrap into their declared width (F4). */
   private assignInto(dest: Val, src: Val, line: number): void {
     if (dest.k === 'n' && src.k === 'n') {
-      dest.v = dest.int ? Math.trunc(src.v) | 0 : src.v;
+      if (!dest.int) {
+        dest.v = src.v;
+      } else if (dest.bits) {
+        dest.v = wrapInt(src.v, dest.bits, dest.uns === true);
+      } else {
+        dest.v = Math.trunc(src.v) | 0;
+      }
       return;
     }
     if (dest.k === 's' && src.k !== 'a') {

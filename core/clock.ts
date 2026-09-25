@@ -43,6 +43,16 @@ export class Clock {
   }
 
   /**
+   * Set virtual time to an absolute instant without firing anything. The
+   * harness uses it to boot a chip near the 32-bit millis() rollover instead
+   * of waiting 49.7 days; timers that are already due when the clock jumps
+   * fire on the next advance(), exactly as if they had just come due.
+   */
+  setNow(us: number): void {
+    this.time = Math.max(0, Math.floor(us));
+  }
+
+  /**
    * Fire every task that is due at the CURRENT instant (time does not move).
    * Lets owners drain zero-delay work scheduled "right now" while remaining
    * passive: nothing runs unless somebody pumps the clock.
