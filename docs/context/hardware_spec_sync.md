@@ -663,9 +663,9 @@ skreslona nazwa znika, nowa dolacza na koniec.
 
 Odstepstwa: tylko globale (lokalne i `static` w funkcji zyja w ramce i nie ma
 czego pilnowac miedzy wywolaniami), tablice przez pierwsze 16 elementow + `+N`,
-obiekty biblioteczne jako nazwa klasy. Odkryte przy okazji, NIE naprawione:
-`int buf[40] = {0};` daje mase 1-elementowa (C wypelnia do 40) - rozmiar bierze
-sie z listy inicjujacej, nie z deklaracji.
+obiekty biblioteczne jako nazwa klasy. Odkryte przy okazji:
+`int buf[40] = {0};` dawalo mase 1-elementowa (C wypelnia do 40) - rozmiar
+bral sie z listy inicjujacej, nie z deklaracji; naprawione w V2.
 
 Weryfikacja: `tests/variables.test.ts` (10) + `tests/vars-panel.test.ts` (18)
 red -> green, `scripts/verify18.mjs` w prawdziwym Chromium (13 asercji:
@@ -673,7 +673,33 @@ domyślne wszystkie, zywe wartosci, chowanie, reload z zapisana preferencja,
 show na koniec, strzalki, reset) + zrzut ekranu.
 
 ---
+# V2 Rozmiar tablicy bierze z deklaracji (commit V2)
+
+**Spec.** V1 zglosil defekt jezykowy: `int buf[40] = {0};` dawalo mase
+1-elementowa, wiec `buf[39]` konczylo sie bledem zamiast zerem. Deklaracja ma
+dac rozmiar, tak jak w C.
+
+**Status: DONE** (2026-09-25; 668 testow).
+
+**Kod.** `Interpreter.initArray(elems, size, type, line)` - jedna zasada dla
+obu miejsc deklaracji: rozmiar z deklaracji wygrywa, ogon za ostatnim
+inicjatorem dostaje wartosc pusta (0 dla liczb i `char`, `""` dla `String`),
+bledny jest dopiero nadmiar inicjatorow. Wczesniej kazde miejsce robilo swoje
+polowa: global `int a[2] = {1,2,3};` przyjmowal 3 elementy milczac, a lokal
+`int a[5] = {1,2};` rzucal "array size 5 but 2 initializers". `charArray()`
+doklada regule `char t[8] = "abc"` = bajty + NUL (literal, ktory dokladnie
+wypelnia mase, jest legalny - bez terminatora, tak jak w C). Ujemny rozmiar
+to blad, nie pusta tablica; skalarny inicjator tablicy (nielegalne C++) daje
+tablice deklarowanego rozmiaru w obu zasiegach. `makeArray` zniklo.
+
+Weryfikacja: `tests/array-init.test.ts` (14) red -> green, suite 668/668,
+typecheck czysty, `scripts/verify18.mjs` 13/13 w Chromium (ten sam szkic co
+przy V1, wiec `int steps[4] = {1,2,3,4}` pilnuje, ze pelna lista sie nie
+zmienila).
+
+---
 # Dziennik zmian implementacji
+- 2026-09-25 | V2 rozmiar tablicy z deklaracji (commit V2) | tests/array-init.test.ts 14x red -> green; suite 668/668 | `initArray()` jedna zasada dla globali i lokalow: rozmiar z deklaracji, ogon wypelniony (0, `""` dla `String`), blad dopiero przy nadmiarze inicjatorow; `char t[8] = "abc"` = bajty + NUL; ujemny rozmiar = blad; global wczesniej milczac przyjmowal nadmiar, lokal rzucal przy brakujacych.
 - 2026-09-25 | V1 podglad zmiennych w GUI (commit V1) | tests/variables.test.ts 10x + tests/vars-panel.test.ts 18x red -> green; suite 654/654; verify18.mjs 13/13 w Chromium | zakladka Variables obok HTTP: globale na zywo, kolejnosc strzalkami lub dragiem, chowanie i przywracanie, layout w localStorage; rdzen: `watchables()`/`machine.variables()`, puste przed `run()`.
 - 2026-09-25 | Przegląd metodą: dokumentacja vs kod | 626/626 | README "Known limitations" opisalo piec rzeczy, ktorych nie mialo w nim byc: delay() w ISR (emulator wykonuje, sprzet wiesza), stany zakazane... zamiast tego: EEPROM (zuzycie 100k cykli liczy sie od F2.2, bullet byl starszy), ADC pływajacy = 0, limit 120 ramek rekurencji, show() NeoPixel bez kosztu czasowego. Zweryfikowane sondu, zero zmian w rdzeniu.
 - 2026-09-25 | N6 bench wielomaszynowy (commit F6) | tests/multi-machine.test.ts 9x green; suite 626/626 | hub + klient + 2 poszkodowanych kolegow; bench kreci zegar klienta, wiec zegar kolegi = czas, ktory kosztowal; odstep rundy dokladnie 400+1500+20 ms; dwa przebiegi identyczne; tykanie wszystkich naraz bez re-entrancji; mutacje rdzenia wywoluja 6/9 bledow.

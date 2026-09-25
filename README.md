@@ -143,6 +143,11 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
 
 - Sketch language = subset of Arduino-C++ (no classes, pointers, structs,
   templates; blocking calls are cooperatively scheduled).
+- Arrays are sized by the declaration, like C: `int buf[40] = {0}` is 40
+  elements and the tail past the last initializer is filled in (`String`
+  arrays pad with `""`, `char t[8] = "abc"` stores bytes plus a NUL). Only too
+  many initializers is an error, and it surfaces at run time - there is no
+  compile step to report it in.
 - Timer ISRs are cooperative: they run between `loop()` slices, never
   preempting it. They are also permissive: `delay()`, `millis()` and even an
   HTTP call inside a handler run like main-line code and spend virtual time,

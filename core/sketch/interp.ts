@@ -268,6 +268,11 @@ function typeIsString(typeName: string): boolean {
   return words.some((w) => STRING_TYPE_WORDS.has(w)) || typeName.includes('char');
 }
 
+/** `char`/`byte` arrays are the one array type C lets a string literal fill. */
+function typeIsChar(typeName: string): boolean {
+  return typeName.split(/\s+/).some((w) => w === 'char' || w === 'byte');
+}
+
 export type SketchGen = Generator<Pause, void, HostValue | undefined>;
 
 /**
@@ -402,10 +407,20 @@ export class Interpreter {
     if (tok) return tok;
     const isIntType = typeIsInt(g.type);
     if (d.init === null) {
-      if (d.arraySize !== null) return this.makeArray(d.arraySize, isIntType);
+      if (d.arraySize !== null) return this.initArray([], d.arraySize, g.type, g.line);
       if (typeIsString(g.type)) return { k: 's', v: '' };
       return isIntType ? numVal(0, true) : numVal(0, false);
     }
+    if (d.init.kind === 'ArrayLit') {
+      const elems = d.init.elems.map((e) => this.evalConst(e, g.line));
+      return this.initArray(elems, d.arraySize, g.type, g.line);
+    }
+    if (d.arraySize !== null && d.init.kind === 'Str' && typeIsChar(g.type)) {
+      return this.charArray(d.init.s, d.arraySize, g.line);
+    }
+    // a scalar initializer for an array is not valid C++; the declared size
+    // still decides what the variable is, exactly as in a function body
+    if (d.arraySize !== null) return this.initArray([], d.arraySize, g.type, g.line);
     return this.evalConst(d.init, g.line);
   }
 
@@ -440,8 +455,43 @@ export class Interpreter {
     return fn;
   }
 
-  private makeArray(size: number, isInt: boolean): Val {
-    return { k: 'a', v: Array.from({ length: size }, () => numVal(0, isInt)), int: isInt };
+  /** The value an element holds where the sketch wrote none: integer 0 for
+   *  numbers and bytes, the empty String for a `String` array. */
+  private blankOf(type: string): Val {
+    if (typeIsInt(type)) return numVal(0, true);
+    return typeIsString(type) ? { k: 's', v: '' } : numVal(0, false);
+  }
+
+  /**
+   * C's initializer rule, shared by both declaration sites: the declared size
+   * is the size of the array, the tail past the last initializer is filled
+   * with blanks, and only too many initializers is an error. With no declared
+   * size the initializer list decides.
+   */
+  private initArray(elems: Val[], size: number | null, type: string, line: number): Val {
+    const isInt = typeIsInt(type);
+    if (size === null) return { k: 'a', v: elems, int: isInt };
+    if (size < 0) throw new SketchRuntimeError(`array has negative size ${size}`, line);
+    if (elems.length > size) {
+      throw new SketchRuntimeError(`array size ${size} but ${elems.length} initializers`, line);
+    }
+    const v = elems.slice();
+    while (v.length < size) v.push(this.blankOf(type));
+    return { k: 'a', v, int: isInt };
+  }
+
+  /** `char t[8] = "abc"` stores bytes and NUL-pads, like C. A literal that
+   *  fills the array exactly has no room for the terminator and is legal. */
+  private charArray(text: string, size: number, line: number): Val {
+    if (size < 0) throw new SketchRuntimeError(`array has negative size ${size}`, line);
+    if (text.length > size) {
+      throw new SketchRuntimeError(`array size ${size} but ${text.length} initializers`, line);
+    }
+    const v = Array.from(
+      { length: size },
+      (_, i) => numVal(i < text.length ? text.codePointAt(i) ?? 0 : 0, true),
+    );
+    return { k: 'a', v, int: true };
   }
 
   /** Global initializers must be constant expressions (like C++). */
@@ -701,14 +751,12 @@ export class Interpreter {
     if (d.arraySize !== null || (d.init && d.init.kind === 'ArrayLit')) {
       if (d.init && d.init.kind === 'ArrayLit') {
         const elems = d.init.elems.map((e) => this.evalPure(e, scope));
-        if (d.arraySize !== null && elems.length !== d.arraySize) {
-          throw new SketchRuntimeError(
-            `array size ${d.arraySize} but ${elems.length} initializers`, g.line,
-          );
-        }
-        return { k: 'a', v: elems, int: isIntType };
+        return this.initArray(elems, d.arraySize, g.type, g.line);
       }
-      return this.makeArray(d.arraySize ?? 0, isIntType);
+      if (d.init && d.init.kind === 'Str' && d.arraySize !== null && typeIsChar(g.type)) {
+        return this.charArray(d.init.s, d.arraySize, g.line);
+      }
+      return this.initArray([], d.arraySize, g.type, g.line);
     }
     if (!d.init) {
       if (typeIsString(g.type)) return { k: 's', v: '' };
