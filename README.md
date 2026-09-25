@@ -134,12 +134,22 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
 - Sketch language = subset of Arduino-C++ (no classes, pointers, structs,
   templates; blocking calls are cooperatively scheduled).
 - Timer ISRs are cooperative: they run between `loop()` slices, never
-  preempting it.
+  preempting it. They are also permissive: `delay()`, `millis()` and even an
+  HTTP call inside a handler run like main-line code and spend virtual time,
+  where a real ISR would hang or reset the chip.
 - A `loop()` without any `delay()` spins the scheduler guard, mirroring a real
   CPU hogging the watchdog.
 - Circuit model is logic-level with LED current limits and pull-ups; analog
   inputs use an ideal Thevenin divider (pot = ideal 10k tap, LDR = CdS curve),
-  A0 is the only analog input (0..1023).
+  A0 is the only analog input (0..1023). A pin nothing drives reads 0: no
+  floating-node drift and no last-bit jitter.
+- The interpreter stops a call chain at 120 frames (`MAX_CALL_DEPTH`) and
+  reports it as a sketch error; hardware overflows its stack at a depth that
+  depends on the frame, and a deep-enough recursion there is a crash, not a
+  message.
+- `Adafruit_NeoPixel.show()` is instant. Real WS2812 timing is ~30 us per bit,
+  so a 30-led refresh costs about a millisecond per frame on hardware and
+  nothing here.
 - The part API is C-style (`dhtReadTemperature(D4)`), not library classes -
   the sketch language has no objects.
 - OLED renders an 8x21 text grid (what SSD1306 Arduino sketches display),
@@ -193,8 +203,12 @@ microsecond virtual clock. `docs/context/ARCHITECTURE.md` records the decisions;
   episode, cleared by a reboot - and count up in the toolbar;
   `invariantStrict = true` throws instead of logging. Probes come from a test
   or the `__emu` console, there is no dialog for them.
-- EEPROM is a 4096-byte byte array (no wear leveling, no page-size errors);
-  `commit()` marks it dirty, which drives the project autosave.
+- EEPROM is a 4096-byte array behind a volatile mirror: `begin()` reloads the
+  flash, `write()` dirties the mirror, only `commit()` spends one erase/write
+  of the sector, and past 100000 cycles the sector stops persisting anything
+  (`eepromStats()`, `eepromSetCycles()`). There is no wear leveling and no
+  page-size error. `commit()` without `begin()` writes and reports success;
+  the core returns false there. A commit still drives the project autosave.
 - `configTime` locks to the **wall-clock** epoch plus virtual time since
   lock; `ESP.deepSleep(us)` is a delayed cold reboot (wake runs `setup()`
   from a cleared serial, flash kept, no power-current model).
